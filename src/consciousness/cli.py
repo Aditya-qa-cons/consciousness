@@ -5,7 +5,7 @@ from pathlib import Path
 
 import click
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
+from rich.progress import BarColumn, Progress, SpinnerColumn, TaskProgressColumn, TextColumn
 from rich.table import Table
 
 from consciousness.parser.claude_export import parse_export
@@ -38,7 +38,8 @@ def ingest(ctx, export_path: Path):
 
     console.print(f"[bold]Parsing export:[/bold] {export_path}")
     conversations, projects = parse_export(export_path)
-    console.print(f"  Found [green]{len(conversations)}[/green] conversations across [green]{len(projects)}[/green] projects")
+    n_conv, n_proj = len(conversations), len(projects)
+    console.print(f"  Found [green]{n_conv}[/green] conversations across [green]{n_proj}[/green] projects")
 
     db = Database(data_dir / "conversations.db").connect()
     vectors = VectorStore(data_dir / "vectors").connect()
@@ -72,7 +73,11 @@ def ingest(ctx, export_path: Path):
             progress.advance(task_vec)
 
     stats = db.stats()
-    console.print(f"\n[bold green]Done.[/bold green] Store: {stats['conversations']} conversations, {stats['messages']} messages, {vectors.count()} vector chunks")
+    console.print(
+        f"\n[bold green]Done.[/bold green] Store: "
+        f"{stats['conversations']} conversations, {stats['messages']} messages, "
+        f"{vectors.count()} vector chunks"
+    )
     console.print(f"Data directory: [dim]{data_dir}[/dim]")
     db.close()
 
@@ -133,7 +138,8 @@ def stats(ctx):
 def mcp_config(ctx):
     """Print the MCP server config block to add to claude_desktop_config.json."""
     data_dir: Path = ctx.obj["data_dir"]
-    import sys, json
+    import json
+    import sys
 
     config = {
         "consciousness": {

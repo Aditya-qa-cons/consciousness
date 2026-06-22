@@ -5,10 +5,8 @@ import zipfile
 from io import BytesIO
 from pathlib import Path
 
-import pytest
-
-from consciousness.parser.claude_export import parse_export
 from consciousness.models import Role
+from consciousness.parser.claude_export import parse_export
 
 
 def make_export_zip(conversations: list[dict]) -> Path:

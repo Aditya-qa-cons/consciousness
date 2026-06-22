@@ -18,11 +18,26 @@ Capture durable facts, preferences, and decisions — not transient chit-chat.
 Omit anything that seems sensitive (credentials, personal health details)."""
 
 _SECTION_PROMPTS = {
-    "About Me": "Summarize durable facts about this person: role, domain expertise, location, background, and any personal context they've shared consistently.",
-    "Technical Stack & Preferences": "List the languages, frameworks, tools, and architectural patterns this person uses or prefers. Include version preferences and strong opinions.",
-    "Working Style": "Describe how this person likes to work with Claude: level of detail they prefer, whether they want code or explanations first, preferred response length, etc.",
-    "Key Projects & Context": "Summarize the main projects, codebases, or domains this person has worked on. Include project names, goals, and key decisions reached.",
-    "Recurring Decisions & Opinions": "List opinions, preferences, and decisions that appear multiple times — technology choices, design philosophies, approaches they've settled on.",
+    "About Me": (
+        "Summarize durable facts about this person: role, domain expertise, location, background, "
+        "and any personal context they've shared consistently."
+    ),
+    "Technical Stack & Preferences": (
+        "List the languages, frameworks, tools, and architectural patterns this person uses or prefers. "
+        "Include version preferences and strong opinions."
+    ),
+    "Working Style": (
+        "Describe how this person likes to work with Claude: level of detail they prefer, "
+        "whether they want code or explanations first, preferred response length, etc."
+    ),
+    "Key Projects & Context": (
+        "Summarize the main projects, codebases, or domains this person has worked on. "
+        "Include project names, goals, and key decisions reached."
+    ),
+    "Recurring Decisions & Opinions": (
+        "List opinions, preferences, and decisions that appear multiple times — "
+        "technology choices, design philosophies, approaches they've settled on."
+    ),
 }
 
 _FALLBACK_TEMPLATE = """[Auto-generated from {count} conversations on {date}]
@@ -76,7 +91,11 @@ class MemorySynthesizer:
             messages=[
                 {
                     "role": "user",
-                    "content": f"Here are excerpts from my Claude conversation history:\n\n{corpus}\n\n---\n\n{section_prompt}{topic_clause}\n\nBe concise (under 200 words). Use bullet points.",
+                    "content": (
+                        f"Here are excerpts from my Claude conversation history:\n\n{corpus}"
+                        f"\n\n---\n\n{section_prompt}{topic_clause}"
+                        "\n\nBe concise (under 200 words). Use bullet points."
+                    ),
                 }
             ],
         )

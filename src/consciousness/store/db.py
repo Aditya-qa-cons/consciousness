@@ -7,7 +7,6 @@ from pathlib import Path
 
 from consciousness.models import Conversation, Message, Project, Role
 
-
 SCHEMA = """
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys=ON;

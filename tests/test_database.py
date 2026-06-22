@@ -1,12 +1,11 @@
 """Tests for SQLite database layer."""
 
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
-from consciousness.store.db import Database
 from consciousness.models import Conversation, Message, Project, Role
+from consciousness.store.db import Database
 
 
 @pytest.fixture
@@ -24,8 +23,14 @@ def make_conversation(include_messages=True) -> Conversation:
     messages = []
     if include_messages:
         messages = [
-            Message(id="msg-1", conversation_id="conv-1", role=Role.human, content="Hello", timestamp=datetime(2024, 6, 1, 10), position=0),
-            Message(id="msg-2", conversation_id="conv-1", role=Role.assistant, content="Hi there!", timestamp=datetime(2024, 6, 1, 10, 1), position=1),
+            Message(
+                id="msg-1", conversation_id="conv-1", role=Role.human,
+                content="Hello", timestamp=datetime(2024, 6, 1, 10), position=0,
+            ),
+            Message(
+                id="msg-2", conversation_id="conv-1", role=Role.assistant,
+                content="Hi there!", timestamp=datetime(2024, 6, 1, 10, 1), position=1,
+            ),
         ]
     return Conversation(
         id="conv-1",

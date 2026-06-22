@@ -31,5 +31,8 @@ packages = ["src/consciousness"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 
+[tool.ruff]
+line-length = 120
+
 [tool.ruff.lint]
 select = ["E", "F", "I"]

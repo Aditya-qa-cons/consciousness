@@ -2,7 +2,6 @@
 
 from datetime import datetime
 from enum import Enum
-from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -87,7 +86,8 @@ class MemoryBlob(BaseModel):
     def render(self) -> str:
         """Render as markdown for pasting into Claude memory import."""
         lines = [
-            f"<!-- Generated {self.generated_at.strftime('%Y-%m-%d')} from {self.source_conversation_count} conversations -->",
+            f"<!-- Generated {self.generated_at.strftime('%Y-%m-%d')} "
+            f"from {self.source_conversation_count} conversations -->",
         ]
         for section, content in self.sections.items():
             lines.append(f"\n## {section}\n{content}")

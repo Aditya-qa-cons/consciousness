@@ -10,7 +10,6 @@ Tool surface:
   synthesize_memory       generate a Claude memory-import blob
 """
 
-import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -19,7 +18,7 @@ from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
 from consciousness.memory.synthesizer import MemorySynthesizer
-from consciousness.models import Conversation, Role
+from consciousness.models import Role
 from consciousness.store.db import Database
 from consciousness.store.vectors import VectorStore
 
@@ -39,14 +38,24 @@ async def list_tools() -> list[Tool]:
     return [
         Tool(
             name="search_history",
-            description="Semantic search over all your Claude conversations. Returns the most relevant message snippets with conversation context.",
+            description=(
+                "Semantic search over all your Claude conversations. "
+                "Returns the most relevant message snippets with conversation context."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "What to search for"},
                     "limit": {"type": "integer", "default": 8, "description": "Max results to return"},
-                    "project": {"type": "string", "description": "Optional: restrict search to a specific project name"},
-                    "role": {"type": "string", "enum": ["human", "assistant"], "description": "Optional: only search messages from one role"},
+                    "project": {
+                        "type": "string",
+                        "description": "Optional: restrict search to a specific project name",
+                    },
+                    "role": {
+                        "type": "string",
+                        "enum": ["human", "assistant"],
+                        "description": "Optional: only search messages from one role",
+                    },
                 },
                 "required": ["query"],
             },
@@ -57,19 +66,32 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_name": {"type": "string", "description": "Name of the project (partial match supported)"},
-                    "include_messages": {"type": "boolean", "default": False, "description": "Include full message text"},
+                    "project_name": {
+                        "type": "string",
+                        "description": "Name of the project (partial match supported)",
+                    },
+                    "include_messages": {
+                        "type": "boolean",
+                        "default": False,
+                        "description": "Include full message text",
+                    },
                 },
                 "required": ["project_name"],
             },
         ),
         Tool(
             name="recall_decision",
-            description="Find decisions, conclusions, and settled choices on a topic across your history. Searches assistant responses for actionable conclusions.",
+            description=(
+                "Find decisions, conclusions, and settled choices on a topic across your history. "
+                "Searches assistant responses for actionable conclusions."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "topic": {"type": "string", "description": "Decision topic to look up (e.g. 'database choice', 'auth strategy')"},
+                    "topic": {
+                        "type": "string",
+                        "description": "Decision topic to look up (e.g. 'database choice', 'auth strategy')",
+                    },
                     "limit": {"type": "integer", "default": 5},
                 },
                 "required": ["topic"],
@@ -104,7 +126,10 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="synthesize_memory",
-            description="Generate a structured memory-import blob from your history. Paste the output into Claude's memory import box to seed any account.",
+            description=(
+                "Generate a structured memory-import blob from your history. "
+                "Paste the output into Claude's memory import box to seed any account."
+            ),
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -306,7 +331,8 @@ async def _synthesize_memory(db: Database, args: dict) -> list[TextContent]:
 
     output = [
         "## Memory Import Blob",
-        f"_Generated from {blob.source_conversation_count} conversations. Paste into Claude → Settings → Memory → Import._\n",
+        f"_Generated from {blob.source_conversation_count} conversations. "
+        "Paste into Claude → Settings → Memory → Import._\n",
         "```",
         blob.render(),
         "```",
