@@ -1,11 +1,12 @@
-"""SQLite persistence for conversations, messages, and projects."""
+"""SQLite persistence for conversations, messages, projects, and extracted knowledge."""
 
 import json
 import sqlite3
+import uuid
 from datetime import datetime
 from pathlib import Path
 
-from consciousness.models import Conversation, Message, Project, Role
+from consciousness.models import Conversation, Decision, ExcludeRule, Message, Preference, Project, Role, TechChoice
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -35,9 +36,46 @@ CREATE TABLE IF NOT EXISTS messages (
     attachments     TEXT DEFAULT '[]'
 );
 
-CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id, position);
-CREATE INDEX IF NOT EXISTS idx_conversations_project ON conversations(project_id);
-CREATE INDEX IF NOT EXISTS idx_conversations_updated ON conversations(updated_at DESC);
+CREATE TABLE IF NOT EXISTS decisions (
+    id              TEXT PRIMARY KEY,
+    topic           TEXT NOT NULL,
+    conclusion      TEXT NOT NULL,
+    confidence      REAL NOT NULL DEFAULT 0.75,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    extracted_at    TEXT NOT NULL,
+    superseded_by   TEXT REFERENCES decisions(id)
+);
+
+CREATE TABLE IF NOT EXISTS preferences (
+    id              TEXT PRIMARY KEY,
+    area            TEXT NOT NULL,
+    preference      TEXT NOT NULL,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    extracted_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS tech_choices (
+    id              TEXT PRIMARY KEY,
+    technology      TEXT NOT NULL,
+    verdict         TEXT NOT NULL,
+    rationale       TEXT,
+    conversation_id TEXT REFERENCES conversations(id) ON DELETE CASCADE,
+    extracted_at    TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS exclude_rules (
+    pattern     TEXT PRIMARY KEY,
+    rule_type   TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_messages_conv       ON messages(conversation_id, position);
+CREATE INDEX IF NOT EXISTS idx_conversations_proj  ON conversations(project_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_upd   ON conversations(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_decisions_topic     ON decisions(topic);
+CREATE INDEX IF NOT EXISTS idx_decisions_conv      ON decisions(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_preferences_area    ON preferences(area);
+CREATE INDEX IF NOT EXISTS idx_tech_choices_tech   ON tech_choices(technology);
 """
 
 
@@ -47,6 +85,10 @@ def _ts(dt: datetime | None) -> str | None:
 
 def _from_ts(s: str | None) -> datetime | None:
     return datetime.fromisoformat(s) if s else None
+
+
+def _new_id() -> str:
+    return str(uuid.uuid4())
 
 
 class Database:
@@ -78,7 +120,7 @@ class Database:
             raise RuntimeError("Database not connected — call connect() first")
         return self._conn
 
-    # ── write ──────────────────────────────────────────────────────────────
+    # ── conversations + messages ───────────────────────────────────────────────
 
     def upsert_project(self, project: Project):
         self.conn.execute(
@@ -113,8 +155,6 @@ class Database:
     def commit(self):
         self.conn.commit()
 
-    # ── read ───────────────────────────────────────────────────────────────
-
     def list_projects(self) -> list[Project]:
         rows = self.conn.execute(
             """SELECT p.*, COUNT(c.id) as conversation_count
@@ -124,20 +164,14 @@ class Database:
         ).fetchall()
         return [
             Project(
-                id=r["id"],
-                name=r["name"],
+                id=r["id"], name=r["name"],
                 created_at=_from_ts(r["created_at"]),
                 conversation_count=r["conversation_count"],
             )
             for r in rows
         ]
 
-    def list_conversations(
-        self,
-        project_id: str | None = None,
-        limit: int = 50,
-        offset: int = 0,
-    ) -> list[Conversation]:
+    def list_conversations(self, project_id: str | None = None, limit: int = 50, offset: int = 0) -> list[Conversation]:
         q = "SELECT * FROM conversations"
         params: list = []
         if project_id:
@@ -145,22 +179,18 @@ class Database:
             params.append(project_id)
         q += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
         params += [limit, offset]
-
         rows = self.conn.execute(q, params).fetchall()
         return [self._conv_from_row(r, include_messages=False) for r in rows]
 
     def get_conversation(self, conversation_id: str) -> Conversation | None:
-        row = self.conn.execute(
-            "SELECT * FROM conversations WHERE id = ?", (conversation_id,)
-        ).fetchone()
+        row = self.conn.execute("SELECT * FROM conversations WHERE id = ?", (conversation_id,)).fetchone()
         if not row:
             return None
         return self._conv_from_row(row, include_messages=True)
 
     def get_messages(self, conversation_id: str) -> list[Message]:
         rows = self.conn.execute(
-            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY position",
-            (conversation_id,),
+            "SELECT * FROM messages WHERE conversation_id = ? ORDER BY position", (conversation_id,)
         ).fetchall()
         return [self._msg_from_row(r) for r in rows]
 
@@ -168,13 +198,102 @@ class Database:
         row = self.conn.execute(
             """SELECT
                 (SELECT COUNT(*) FROM conversations) as conversations,
-                (SELECT COUNT(*) FROM messages) as messages,
-                (SELECT COUNT(*) FROM projects) as projects
+                (SELECT COUNT(*) FROM messages)      as messages,
+                (SELECT COUNT(*) FROM projects)      as projects,
+                (SELECT COUNT(*) FROM decisions)     as decisions,
+                (SELECT COUNT(*) FROM preferences)   as preferences,
+                (SELECT COUNT(*) FROM tech_choices)  as tech_choices
             """
         ).fetchone()
         return dict(row)
 
-    # ── helpers ────────────────────────────────────────────────────────────
+    # ── decisions ─────────────────────────────────────────────────────────────
+
+    def upsert_decision(self, decision: Decision):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO decisions"
+            "(id, topic, conclusion, confidence, conversation_id, extracted_at, superseded_by)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (decision.id, decision.topic, decision.conclusion, decision.confidence,
+             decision.conversation_id, _ts(decision.extracted_at), decision.superseded_by),
+        )
+
+    def find_active_decisions(self, topic: str) -> list[Decision]:
+        """Return non-superseded decisions whose topic contains the search term."""
+        rows = self.conn.execute(
+            "SELECT * FROM decisions WHERE lower(topic) LIKE ? AND superseded_by IS NULL ORDER BY extracted_at DESC",
+            (f"%{topic.lower()}%",),
+        ).fetchall()
+        return [self._decision_from_row(r) for r in rows]
+
+    def list_decisions(self, limit: int = 50) -> list[Decision]:
+        rows = self.conn.execute(
+            "SELECT * FROM decisions WHERE superseded_by IS NULL ORDER BY extracted_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+        return [self._decision_from_row(r) for r in rows]
+
+    def supersede_decision(self, old_id: str, new_id: str):
+        self.conn.execute("UPDATE decisions SET superseded_by = ? WHERE id = ?", (new_id, old_id))
+
+    # ── preferences ───────────────────────────────────────────────────────────
+
+    def upsert_preference(self, pref: Preference):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO preferences"
+            "(id, area, preference, conversation_id, extracted_at) VALUES (?,?,?,?,?)",
+            (pref.id, pref.area, pref.preference, pref.conversation_id, _ts(pref.extracted_at)),
+        )
+
+    def list_preferences(self) -> list[Preference]:
+        rows = self.conn.execute("SELECT * FROM preferences ORDER BY extracted_at DESC").fetchall()
+        return [self._pref_from_row(r) for r in rows]
+
+    # ── tech choices ───────────────────────────────────────────────────────────
+
+    def upsert_tech_choice(self, tc: TechChoice):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO tech_choices(id, technology, verdict, rationale, conversation_id, extracted_at)
+               VALUES (?,?,?,?,?,?)""",
+            (tc.id, tc.technology, tc.verdict, tc.rationale, tc.conversation_id, _ts(tc.extracted_at)),
+        )
+
+    def list_tech_choices(self) -> list[TechChoice]:
+        rows = self.conn.execute("SELECT * FROM tech_choices ORDER BY extracted_at DESC").fetchall()
+        return [self._tech_from_row(r) for r in rows]
+
+    # ── exclude rules ─────────────────────────────────────────────────────────
+
+    def add_exclude_rule(self, rule: ExcludeRule):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO exclude_rules(pattern, rule_type, created_at) VALUES (?,?,?)",
+            (rule.pattern, rule.rule_type, _ts(rule.created_at)),
+        )
+
+    def remove_exclude_rule(self, pattern: str):
+        self.conn.execute("DELETE FROM exclude_rules WHERE pattern = ?", (pattern,))
+
+    def list_exclude_rules(self) -> list[ExcludeRule]:
+        rows = self.conn.execute("SELECT * FROM exclude_rules ORDER BY created_at").fetchall()
+        return [
+            ExcludeRule(pattern=r["pattern"], rule_type=r["rule_type"], created_at=_from_ts(r["created_at"]))
+            for r in rows
+        ]
+
+    def is_excluded(self, conv: Conversation) -> bool:
+        """Return True if conv matches any active exclude rule."""
+        import fnmatch
+
+        rules = self.list_exclude_rules()
+        for rule in rules:
+            if rule.rule_type == "conversation_id" and rule.pattern == conv.id:
+                return True
+            if rule.rule_type == "project_id" and rule.pattern == conv.project_id:
+                return True
+            if rule.rule_type == "title_glob" and fnmatch.fnmatch(conv.title.lower(), rule.pattern.lower()):
+                return True
+        return False
+
+    # ── helpers ────────────────────────────────────────────────────────────────
 
     def _conv_from_row(self, r: sqlite3.Row, include_messages: bool) -> Conversation:
         messages = self.get_messages(r["id"]) if include_messages else []
@@ -195,4 +314,34 @@ class Database:
             content=r["content"],
             timestamp=_from_ts(r["timestamp"]),
             position=r["position"],
+        )
+
+    def _decision_from_row(self, r: sqlite3.Row) -> Decision:
+        return Decision(
+            id=r["id"],
+            topic=r["topic"],
+            conclusion=r["conclusion"],
+            confidence=r["confidence"],
+            conversation_id=r["conversation_id"],
+            extracted_at=_from_ts(r["extracted_at"]),
+            superseded_by=r["superseded_by"],
+        )
+
+    def _pref_from_row(self, r: sqlite3.Row) -> Preference:
+        return Preference(
+            id=r["id"],
+            area=r["area"],
+            preference=r["preference"],
+            conversation_id=r["conversation_id"],
+            extracted_at=_from_ts(r["extracted_at"]),
+        )
+
+    def _tech_from_row(self, r: sqlite3.Row) -> TechChoice:
+        return TechChoice(
+            id=r["id"],
+            technology=r["technology"],
+            verdict=r["verdict"],
+            rationale=r["rationale"],
+            conversation_id=r["conversation_id"],
+            extracted_at=_from_ts(r["extracted_at"]),
         )

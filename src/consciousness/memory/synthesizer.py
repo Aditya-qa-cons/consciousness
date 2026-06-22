@@ -103,7 +103,9 @@ class MemorySynthesizer:
 
     def _build_corpus(self, conversations: list[Conversation], max_chars: int) -> str:
         """Sample conversations into a text corpus, newest first, within char budget."""
-        sorted_convs = sorted(conversations, key=lambda c: c.updated_at, reverse=True)
+        from datetime import datetime, timezone
+        _epoch = datetime.min.replace(tzinfo=timezone.utc)
+        sorted_convs = sorted(conversations, key=lambda c: c.updated_at or _epoch, reverse=True)
         parts = []
         total = 0
         for conv in sorted_convs:

@@ -56,13 +56,10 @@ def _parse_attachment(raw: dict) -> Attachment:
 
 def _parse_message(raw: dict, conversation_id: str, position: int) -> Message:
     content = raw.get("text") or ""
-    # Some exports nest content differently
     if not content and "content" in raw:
         blocks = raw["content"]
         if isinstance(blocks, list):
-            content = "\n".join(
-                b.get("text", "") for b in blocks if isinstance(b, dict)
-            )
+            content = "\n".join(b.get("text", "") for b in blocks if isinstance(b, dict))
         elif isinstance(blocks, str):
             content = blocks
 
@@ -83,12 +80,7 @@ def _parse_message(raw: dict, conversation_id: str, position: int) -> Message:
 def _parse_conversation(raw: dict) -> Conversation:
     conv_id = raw["uuid"]
     project_raw = raw.get("project")
-
-    messages = [
-        _parse_message(m, conv_id, i)
-        for i, m in enumerate(raw.get("chat_messages", []))
-    ]
-
+    messages = [_parse_message(m, conv_id, i) for i, m in enumerate(raw.get("chat_messages", []))]
     return Conversation(
         id=conv_id,
         title=raw.get("name") or "Untitled",
@@ -100,72 +92,21 @@ def _parse_conversation(raw: dict) -> Conversation:
     )
 
 
-def parse_export(path: Path) -> tuple[list[Conversation], list[Project]]:
-    """Parse a Claude.ai export ZIP or raw conversations.json.
-
-    Returns (conversations, projects). Projects are derived from conversation
-    metadata if no separate projects.json exists.
-    """
-    if path.suffix == ".zip":
-        return _parse_zip(path)
-    if path.suffix == ".json":
-        return _parse_json_file(path)
-    raise ExportParseError(f"Unsupported export format: {path.suffix}")
-
-
-def _parse_zip(path: Path) -> tuple[list[Conversation], list[Project]]:
-    with zipfile.ZipFile(path) as zf:
-        names = zf.namelist()
-
-        if "conversations.json" not in names:
-            raise ExportParseError("conversations.json not found in export ZIP")
-
-        with zf.open("conversations.json") as f:
-            raw_conversations = json.load(f)
-
-        raw_projects = []
-        if "projects.json" in names:
-            with zf.open("projects.json") as f:
-                raw_projects = json.load(f)
-
-    return _build_models(raw_conversations, raw_projects)
-
-
-def _parse_json_file(path: Path) -> tuple[list[Conversation], list[Project]]:
-    with open(path) as f:
-        raw = json.load(f)
-    # Support both bare array and {conversations: [...]} envelope
-    if isinstance(raw, list):
-        return _build_models(raw, [])
-    if isinstance(raw, dict) and "conversations" in raw:
-        return _build_models(raw["conversations"], raw.get("projects", []))
-    raise ExportParseError("Unrecognized JSON structure")
-
-
-def _build_models(
-    raw_conversations: list[dict], raw_projects: list[dict]
-) -> tuple[list[Conversation], list[Project]]:
+def _build_models(raw_conversations: list[dict], raw_projects: list[dict]) -> tuple[list[Conversation], list[Project]]:
     conversations = [_parse_conversation(c) for c in raw_conversations]
 
-    # Build project index from explicit projects.json if available
     project_map: dict[str, Project] = {}
     for rp in raw_projects:
         p = Project(
-            id=rp["uuid"],
-            name=rp.get("name", "Unnamed Project"),
+            id=rp["uuid"], name=rp.get("name", "Unnamed Project"),
             created_at=_parse_timestamp(rp.get("created_at")),
         )
         project_map[p.id] = p
 
-    # Supplement with projects inferred from conversation metadata
     for conv in conversations:
         if conv.project_id and conv.project_id not in project_map:
-            project_map[conv.project_id] = Project(
-                id=conv.project_id,
-                name=conv.project_name or "Unknown Project",
-            )
+            project_map[conv.project_id] = Project(id=conv.project_id, name=conv.project_name or "Unknown Project")
 
-    # Tally conversation counts
     counts: dict[str, int] = {}
     for conv in conversations:
         if conv.project_id:
@@ -175,3 +116,55 @@ def _build_models(
             project_map[pid].conversation_count = count
 
     return conversations, list(project_map.values())
+
+
+class ClaudeExportAdapter:
+    """Parses Claude.ai ZIP exports and bare conversations.json files."""
+
+    source_name = "claude_export"
+
+    def can_handle(self, path: Path) -> bool:
+        if path.suffix == ".zip":
+            try:
+                with zipfile.ZipFile(path) as zf:
+                    return "conversations.json" in zf.namelist()
+            except Exception:
+                return False
+        if path.suffix == ".json":
+            return True
+        return False
+
+    def parse(self, path: Path) -> tuple[list[Conversation], list[Project]]:
+        if path.suffix == ".zip":
+            return self._parse_zip(path)
+        if path.suffix == ".json":
+            return self._parse_json_file(path)
+        raise ExportParseError(f"Unsupported export format: {path.suffix}")
+
+    def _parse_zip(self, path: Path) -> tuple[list[Conversation], list[Project]]:
+        with zipfile.ZipFile(path) as zf:
+            names = zf.namelist()
+            if "conversations.json" not in names:
+                raise ExportParseError("conversations.json not found in export ZIP")
+            with zf.open("conversations.json") as f:
+                raw_conversations = json.load(f)
+            raw_projects = []
+            if "projects.json" in names:
+                with zf.open("projects.json") as f:
+                    raw_projects = json.load(f)
+        return _build_models(raw_conversations, raw_projects)
+
+    def _parse_json_file(self, path: Path) -> tuple[list[Conversation], list[Project]]:
+        with open(path) as f:
+            raw = json.load(f)
+        if isinstance(raw, list):
+            return _build_models(raw, [])
+        if isinstance(raw, dict) and "conversations" in raw:
+            return _build_models(raw["conversations"], raw.get("projects", []))
+        raise ExportParseError("Unrecognized JSON structure")
+
+
+# Module-level convenience — keeps existing call sites working
+def parse_export(path: Path) -> tuple[list[Conversation], list[Project]]:
+    adapter = ClaudeExportAdapter()
+    return adapter.parse(path)

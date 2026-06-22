@@ -1,4 +1,4 @@
-"""Integration tests for the full ingest pipeline: parse → DB → vectors → query."""
+"""Integration tests for the full ingest pipeline: parse → DB → vectors → knowledge extraction."""
 
 import json
 import zipfile
@@ -93,8 +93,7 @@ def ingested(tmp_path) -> tuple[Database, VectorStore]:
         db.upsert_project(project)
     for conv in conversations:
         db.upsert_conversation(conv)
-        for msg in conv.messages:
-            vectors.index_message(msg)
+        vectors.index_conversation(conv)
     db.commit()
 
     yield db, vectors
@@ -146,21 +145,18 @@ def test_pipeline_conversation_retrievable_by_id(ingested):
 
 
 def test_pipeline_reingest_is_idempotent(ingested):
-    """Re-ingesting the same export should not duplicate data."""
     db, vectors = ingested
-    initial_count = db.stats()["conversations"]
+    initial_conv_count = db.stats()["conversations"]
     initial_vec_count = vectors.count()
 
-    # Re-ingest
     export_path = _make_export_zip(EXPORT_DATA)
     conversations, projects = parse_export(export_path)
     for project in projects:
         db.upsert_project(project)
     for conv in conversations:
         db.upsert_conversation(conv)
-        for msg in conv.messages:
-            vectors.index_message(msg)
+        vectors.index_conversation(conv)
     db.commit()
 
-    assert db.stats()["conversations"] == initial_count
+    assert db.stats()["conversations"] == initial_conv_count
     assert vectors.count() == initial_vec_count

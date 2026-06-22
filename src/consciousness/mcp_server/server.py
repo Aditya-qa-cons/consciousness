@@ -1,13 +1,16 @@
-"""MCP server — exposes your Claude history as account-independent tools.
+"""MCP server — exposes your Claude history as account-independent tools and resources.
 
 Tool surface:
   search_history          semantic search over all conversations
   get_project_context     all conversations in a named project
-  recall_decision         surface decisions/conclusions on a topic
+  recall_decision         structured DB lookup first, vector search fallback
   get_recent_context      summaries of recent N days of conversations
   get_conversation        retrieve a full conversation by ID
   list_projects           all projects with conversation counts
   synthesize_memory       generate a Claude memory-import blob
+
+Resource surface:
+  memory://context        auto-injected condensed view of decisions + recent activity
 
 Business-logic handlers are module-level async functions so tests can call
 them directly without going through the MCP transport layer.
@@ -19,14 +22,14 @@ from pathlib import Path
 
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
-from mcp.types import TextContent, Tool
+from mcp.types import Resource, TextContent, TextResourceContents, Tool
+from pydantic import AnyUrl
 
 from consciousness.memory.synthesizer import MemorySynthesizer
 from consciousness.models import Role
 from consciousness.store.db import Database
 from consciousness.store.vectors import VectorStore
 
-# Set before calling run(); used by the lifespan to open stores.
 _data_dir: Path | None = None
 
 
@@ -49,6 +52,67 @@ def _stores() -> tuple[Database, VectorStore]:
     return ctx.lifespan_context["db"], ctx.lifespan_context["vectors"]
 
 
+# ── resources ────────────────────────────────────────────────────────────────
+
+
+@app.list_resources()
+async def handle_list_resources() -> list[Resource]:
+    return [
+        Resource(
+            uri=AnyUrl("memory://context"),
+            name="Memory Context",
+            description=(
+                "Auto-injected at session start: your recent decisions, technology choices, "
+                "preferences, and active conversations — no tool call needed."
+            ),
+            mimeType="text/markdown",
+        )
+    ]
+
+
+@app.read_resource()
+async def handle_read_resource(uri: AnyUrl) -> list[TextResourceContents]:
+    db, _ = _stores()
+    content = await _build_memory_resource(db)
+    return [TextResourceContents(uri=uri, mimeType="text/markdown", text=content)]
+
+
+async def _build_memory_resource(db: Database) -> str:
+    """Condensed markdown document for automatic context injection."""
+    lines = ["# Your Context\n"]
+
+    # Recent decisions (non-superseded, last 20)
+    decisions = db.list_decisions(limit=20)
+    if decisions:
+        lines.append("## Recent Decisions\n")
+        for d in decisions[:10]:
+            lines.append(f"- **{d.topic}**: {d.conclusion[:200]}")
+        lines.append("")
+
+    # Tech choices
+    tech = db.list_tech_choices()
+    if tech:
+        lines.append("## Technology Choices\n")
+        seen_tech: set[str] = set()
+        for tc in tech:
+            if tc.technology not in seen_tech:
+                lines.append(f"- **{tc.technology}**: {tc.verdict[:150]}")
+                seen_tech.add(tc.technology)
+        lines.append("")
+
+    # Active conversations — last 7 days
+    cutoff = datetime.now(timezone.utc) - timedelta(days=7)
+    recent_convs = db.list_conversations(limit=100)
+    recent = [c for c in recent_convs if c.updated_at and c.updated_at >= cutoff]
+    if recent:
+        lines.append(f"## Active This Week ({len(recent)} conversations)\n")
+        for conv in recent[:5]:
+            lines.append(f"- {conv.title} ({conv.updated_at.strftime('%Y-%m-%d') if conv.updated_at else '?'})")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 # ── tool definitions ────────────────────────────────────────────────────────
 
 
@@ -59,17 +123,14 @@ async def list_tools() -> list[Tool]:
             name="search_history",
             description=(
                 "Semantic search over all your Claude conversations. "
-                "Returns the most relevant message snippets with conversation context."
+                "Returns the most relevant Q+A exchanges with relevance scores."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "What to search for"},
                     "limit": {"type": "integer", "default": 8, "description": "Max results to return"},
-                    "project": {
-                        "type": "string",
-                        "description": "Optional: restrict search to a specific project name",
-                    },
+                    "project": {"type": "string", "description": "Optional: restrict to a specific project name"},
                     "role": {
                         "type": "string",
                         "enum": ["human", "assistant"],
@@ -85,13 +146,9 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "project_name": {
-                        "type": "string",
-                        "description": "Name of the project (partial match supported)",
-                    },
+                    "project_name": {"type": "string", "description": "Name of the project (partial match supported)"},
                     "include_messages": {
-                        "type": "boolean",
-                        "default": False,
+                        "type": "boolean", "default": False,
                         "description": "Include full message text",
                     },
                 },
@@ -101,16 +158,13 @@ async def list_tools() -> list[Tool]:
         Tool(
             name="recall_decision",
             description=(
-                "Find decisions, conclusions, and settled choices on a topic across your history. "
-                "Searches assistant responses for actionable conclusions."
+                "Recall decisions and conclusions on a topic. "
+                "Checks structured decision history first (fast, exact), then falls back to semantic search."
             ),
             inputSchema={
                 "type": "object",
                 "properties": {
-                    "topic": {
-                        "type": "string",
-                        "description": "Decision topic to look up (e.g. 'database choice', 'auth strategy')",
-                    },
+                    "topic": {"type": "string", "description": "Decision topic (e.g. 'database', 'auth strategy')"},
                     "limit": {"type": "integer", "default": 5},
                 },
                 "required": ["topic"],
@@ -132,9 +186,7 @@ async def list_tools() -> list[Tool]:
             description="Retrieve the full text of a specific conversation by ID.",
             inputSchema={
                 "type": "object",
-                "properties": {
-                    "conversation_id": {"type": "string"},
-                },
+                "properties": {"conversation_id": {"type": "string"}},
                 "required": ["conversation_id"],
             },
         ),
@@ -155,9 +207,9 @@ async def list_tools() -> list[Tool]:
                     "focus_topics": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional topics to emphasize in the synthesis",
+                        "description": "Optional topics to emphasize",
                     },
-                    "project": {"type": "string", "description": "Optional: limit synthesis to one project"},
+                    "project": {"type": "string", "description": "Optional: limit to one project"},
                 },
             },
         ),
@@ -189,7 +241,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
-# ── business-logic handlers (testable without MCP transport) ─────────────────
+# ── business-logic handlers ──────────────────────────────────────────────────
 
 
 async def search_history(db: Database, vectors: VectorStore, args: dict) -> list[TextContent]:
@@ -220,7 +272,7 @@ async def search_history(db: Database, vectors: VectorStore, args: dict) -> list
             seen_convs[hit.conversation_id] = conv.title if conv else hit.conversation_id
 
         title = seen_convs[hit.conversation_id]
-        lines.append(f"### [{title}] (id: {hit.conversation_id})")
+        lines.append(f"### [{title}] (id: {hit.conversation_id})  _{hit.relevance_label} relevance_")
         lines.append(f"> {hit.chunk_text[:400]}")
         lines.append("")
 
@@ -241,7 +293,6 @@ async def get_project_context(db: Database, args: dict) -> list[TextContent]:
     conversations = db.list_conversations(project_id=project.id, limit=200)
 
     lines = [f"## Project: {project.name}", f"{len(conversations)} conversations\n"]
-
     for conv in conversations:
         lines.append(f"### {conv.title}")
         lines.append(f"Updated: {conv.updated_at.strftime('%Y-%m-%d') if conv.updated_at else 'unknown'}")
@@ -258,23 +309,36 @@ async def recall_decision(db: Database, vectors: VectorStore, args: dict) -> lis
     topic = args["topic"]
     limit = args.get("limit", 5)
 
+    # Structured DB lookup first — fast, exact, uses extracted facts
+    structured = db.find_active_decisions(topic)
+    lines = [f"## Decisions & conclusions about: {topic}\n"]
+
+    if structured:
+        lines.append("### From decision history\n")
+        for d in structured[:limit]:
+            conv = db.get_conversation(d.conversation_id)
+            conv_title = conv.title if conv else d.conversation_id
+            lines.append(f"**{d.topic}** _(confidence: {d.confidence:.0%}, from: {conv_title})_")
+            lines.append(d.conclusion)
+            lines.append("")
+
+    # Supplement with vector search for full-sentence context
     hits = vectors.search(
         f"decision conclusion recommendation {topic}",
-        limit=limit * 2,
+        limit=limit,
         role_filter=Role.assistant,
     )
-    hits = hits[:limit]
+    if hits:
+        lines.append("### From conversation search\n")
+        for hit in hits:
+            conv = db.get_conversation(hit.conversation_id)
+            title = conv.title if conv else hit.conversation_id
+            lines.append(f"**{title}** _{hit.relevance_label} relevance_")
+            lines.append(hit.chunk_text[:600])
+            lines.append("")
 
-    if not hits:
+    if len(lines) == 2:  # only the header
         return [TextContent(type="text", text=f"No decisions found about '{topic}'.")]
-
-    lines = [f"## Decisions & conclusions about: {topic}\n"]
-    for hit in hits:
-        conv = db.get_conversation(hit.conversation_id)
-        title = conv.title if conv else hit.conversation_id
-        lines.append(f"### {title}")
-        lines.append(hit.chunk_text[:600])
-        lines.append("")
 
     return [TextContent(type="text", text="\n".join(lines))]
 
@@ -368,8 +432,4 @@ async def run(data_dir: Path):
     _data_dir = data_dir
 
     async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options(),
-        )
+        await app.run(read_stream, write_stream, app.create_initialization_options())

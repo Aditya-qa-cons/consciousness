@@ -1,6 +1,6 @@
 """Core domain models — account-independent representations of Claude history."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -64,6 +64,53 @@ class Project(BaseModel):
     conversation_count: int = 0
 
 
+# ── extracted knowledge ────────────────────────────────────────────────────────
+
+
+class Decision(BaseModel):
+    """A settled conclusion extracted from an assistant message."""
+
+    id: str
+    topic: str
+    conclusion: str
+    confidence: float = 0.75
+    conversation_id: str
+    extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    superseded_by: str | None = None  # ID of a later decision on the same topic
+
+
+class Preference(BaseModel):
+    """A recurring preference expressed by the user."""
+
+    id: str
+    area: str
+    preference: str
+    conversation_id: str
+    extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TechChoice(BaseModel):
+    """A technology verdict reached in a conversation."""
+
+    id: str
+    technology: str
+    verdict: str
+    rationale: str | None = None
+    conversation_id: str
+    extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class ExcludeRule(BaseModel):
+    """A rule that prevents a conversation or project from being indexed."""
+
+    pattern: str
+    rule_type: str  # 'conversation_id' | 'project_id' | 'title_glob'
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+# ── search + memory ────────────────────────────────────────────────────────────
+
+
 class SearchResult(BaseModel):
     conversation_id: str
     conversation_title: str
@@ -78,13 +125,12 @@ class SearchResult(BaseModel):
 class MemoryBlob(BaseModel):
     """Structured payload ready for Claude's memory import box."""
 
-    generated_at: datetime = Field(default_factory=datetime.utcnow)
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     source_conversation_count: int
     focus_topics: list[str]
     sections: dict[str, str]
 
     def render(self) -> str:
-        """Render as markdown for pasting into Claude memory import."""
         lines = [
             f"<!-- Generated {self.generated_at.strftime('%Y-%m-%d')} "
             f"from {self.source_conversation_count} conversations -->",
