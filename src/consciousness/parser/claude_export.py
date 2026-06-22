@@ -27,6 +27,7 @@ Conversation JSON shape (as observed from exports):
 
 import json
 import zipfile
+from datetime import datetime
 from pathlib import Path
 
 from dateutil import parser as dateparser
@@ -38,7 +39,7 @@ class ExportParseError(Exception):
     pass
 
 
-def _parse_timestamp(raw: str | None) -> None:
+def _parse_timestamp(raw: str | None) -> datetime | None:
     if raw is None:
         return None
     return dateparser.parse(raw)

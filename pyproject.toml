@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "ruff>=0.4"]
+dev = ["pytest>=7.0", "pytest-asyncio>=0.23", "pytest-mock>=3.0", "ruff>=0.4"]
 
 [project.scripts]
 consciousness = "consciousness.cli:cli"
@@ -30,6 +30,10 @@ packages = ["src/consciousness"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "integration: tests requiring sentence-transformers + ChromaDB (slow)",
+    "unit: fast tests with no heavy ML dependencies",
+]
 
 [tool.ruff]
 line-length = 120

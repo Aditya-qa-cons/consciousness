@@ -66,8 +66,6 @@ def ingest(ctx, export_path: Path):
         db.commit()
 
         task_vec = progress.add_task("Building embeddings...", total=len(all_messages))
-        vectors.index_messages_batch(all_messages, progress=progress.tasks[task_vec.id] if False else None)
-        # Note: pass a simple progress callback
         for msg in all_messages:
             vectors.index_message(msg)
             progress.advance(task_vec)

@@ -8,8 +8,12 @@ Tool surface:
   get_conversation        retrieve a full conversation by ID
   list_projects           all projects with conversation counts
   synthesize_memory       generate a Claude memory-import blob
+
+Business-logic handlers are module-level async functions so tests can call
+them directly without going through the MCP transport layer.
 """
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -22,12 +26,27 @@ from consciousness.models import Role
 from consciousness.store.db import Database
 from consciousness.store.vectors import VectorStore
 
-app = Server("consciousness")
+# Set before calling run(); used by the lifespan to open stores.
+_data_dir: Path | None = None
 
 
-def _get_stores(ctx) -> tuple[Database, VectorStore]:
-    """Retrieve DB and vector store from server lifespan context."""
-    return ctx.request_context.lifespan_context["db"], ctx.request_context.lifespan_context["vectors"]
+@asynccontextmanager
+async def _lifespan(server: Server):
+    assert _data_dir is not None, "Call run(data_dir) to set _data_dir before serving"
+    db = Database(_data_dir / "conversations.db").connect()
+    vectors = VectorStore(_data_dir / "vectors").connect()
+    try:
+        yield {"db": db, "vectors": vectors}
+    finally:
+        db.close()
+
+
+app = Server("consciousness", lifespan=_lifespan)
+
+
+def _stores() -> tuple[Database, VectorStore]:
+    ctx = app.request_context
+    return ctx.lifespan_context["db"], ctx.lifespan_context["vectors"]
 
 
 # ── tool definitions ────────────────────────────────────────────────────────
@@ -145,33 +164,35 @@ async def list_tools() -> list[Tool]:
     ]
 
 
-# ── tool handlers ────────────────────────────────────────────────────────────
+# ── tool dispatcher ──────────────────────────────────────────────────────────
 
 
 @app.call_tool()
-async def call_tool(name: str, arguments: dict, ctx=None) -> list[TextContent]:
-    db, vectors = _get_stores(ctx)
-
+async def call_tool(name: str, arguments: dict) -> list[TextContent]:
+    db, vectors = _stores()
     match name:
         case "search_history":
-            return await _search_history(db, vectors, arguments)
+            return await search_history(db, vectors, arguments)
         case "get_project_context":
-            return await _get_project_context(db, arguments)
+            return await get_project_context(db, arguments)
         case "recall_decision":
-            return await _recall_decision(db, vectors, arguments)
+            return await recall_decision(db, vectors, arguments)
         case "get_recent_context":
-            return await _get_recent_context(db, arguments)
+            return await get_recent_context(db, arguments)
         case "get_conversation":
-            return await _get_conversation(db, arguments)
+            return await get_conversation(db, arguments)
         case "list_projects":
-            return await _list_projects(db)
+            return await list_projects(db)
         case "synthesize_memory":
-            return await _synthesize_memory(db, arguments)
+            return await synthesize_memory(db, arguments)
         case _:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
-async def _search_history(db: Database, vectors: VectorStore, args: dict) -> list[TextContent]:
+# ── business-logic handlers (testable without MCP transport) ─────────────────
+
+
+async def search_history(db: Database, vectors: VectorStore, args: dict) -> list[TextContent]:
     query = args["query"]
     limit = args.get("limit", 8)
     project_filter = args.get("project")
@@ -206,7 +227,7 @@ async def _search_history(db: Database, vectors: VectorStore, args: dict) -> lis
     return [TextContent(type="text", text="\n".join(lines))]
 
 
-async def _get_project_context(db: Database, args: dict) -> list[TextContent]:
+async def get_project_context(db: Database, args: dict) -> list[TextContent]:
     name = args["project_name"]
     include_messages = args.get("include_messages", False)
 
@@ -233,11 +254,10 @@ async def _get_project_context(db: Database, args: dict) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(lines))]
 
 
-async def _recall_decision(db: Database, vectors: VectorStore, args: dict) -> list[TextContent]:
+async def recall_decision(db: Database, vectors: VectorStore, args: dict) -> list[TextContent]:
     topic = args["topic"]
     limit = args.get("limit", 5)
 
-    # Search only assistant messages — decisions live in responses
     hits = vectors.search(
         f"decision conclusion recommendation {topic}",
         limit=limit * 2,
@@ -259,7 +279,7 @@ async def _recall_decision(db: Database, vectors: VectorStore, args: dict) -> li
     return [TextContent(type="text", text="\n".join(lines))]
 
 
-async def _get_recent_context(db: Database, args: dict) -> list[TextContent]:
+async def get_recent_context(db: Database, args: dict) -> list[TextContent]:
     days = args.get("days", 7)
     project_filter = args.get("project")
     cutoff = datetime.utcnow() - timedelta(days=days)
@@ -291,14 +311,14 @@ async def _get_recent_context(db: Database, args: dict) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(lines))]
 
 
-async def _get_conversation(db: Database, args: dict) -> list[TextContent]:
+async def get_conversation(db: Database, args: dict) -> list[TextContent]:
     conv = db.get_conversation(args["conversation_id"])
     if not conv:
         return [TextContent(type="text", text="Conversation not found.")]
     return [TextContent(type="text", text=conv.as_text())]
 
 
-async def _list_projects(db: Database) -> list[TextContent]:
+async def list_projects(db: Database) -> list[TextContent]:
     projects = db.list_projects()
     if not projects:
         return [TextContent(type="text", text="No projects found. Run `consciousness ingest` first.")]
@@ -311,7 +331,7 @@ async def _list_projects(db: Database) -> list[TextContent]:
     return [TextContent(type="text", text="\n".join(lines))]
 
 
-async def _synthesize_memory(db: Database, args: dict) -> list[TextContent]:
+async def synthesize_memory(db: Database, args: dict) -> list[TextContent]:
     focus_topics = args.get("focus_topics", [])
     project_filter = args.get("project")
 
@@ -343,21 +363,13 @@ async def _synthesize_memory(db: Database, args: dict) -> list[TextContent]:
 # ── server entrypoint ────────────────────────────────────────────────────────
 
 
-def create_server(data_dir: Path) -> tuple[Server, Database, VectorStore]:
-    db = Database(data_dir / "conversations.db").connect()
-    vectors = VectorStore(data_dir / "vectors").connect()
-    return app, db, vectors
-
-
 async def run(data_dir: Path):
-    db = Database(data_dir / "conversations.db").connect()
-    vectors = VectorStore(data_dir / "vectors").connect()
+    global _data_dir
+    _data_dir = data_dir
 
     async with stdio_server() as (read_stream, write_stream):
         await app.run(
             read_stream,
             write_stream,
             app.create_initialization_options(),
-            # Pass stores into request context
-            lifespan_context={"db": db, "vectors": vectors},
         )

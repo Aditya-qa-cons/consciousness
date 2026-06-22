@@ -7,7 +7,9 @@ on:
     branches: ["main"]
 
 jobs:
-  test:
+  # ── fast unit tests ───────────────────────────────────────────────────────
+  unit:
+    name: unit tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -16,8 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -28,5 +29,38 @@ jobs:
       - name: Lint
         run: ruff check src/ tests/
 
-      - name: Test
-        run: pytest tests/ -v --tb=short
+      - name: Unit tests
+        run: pytest tests/ -v --tb=short -m "not integration"
+
+  # ── integration tests ─────────────────────────────────────────────────────
+  integration:
+    name: integration tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Cache the sentence-transformers model download (~90 MB) so CI stays fast
+      - name: Cache HuggingFace models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-all-MiniLM-L6-v2-${{ runner.os }}
+          restore-keys: hf-all-MiniLM-L6-v2-
+
+      - name: Install dependencies
+        run: pip install -e ".[dev]"
+
+      - name: Integration tests
+        run: pytest tests/integration/ -v --tb=short -m integration
+        env:
+          # No real API key — synthesizer runs in fallback mode
+          ANTHROPIC_API_KEY: ""
