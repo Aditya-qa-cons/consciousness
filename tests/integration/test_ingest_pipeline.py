@@ -10,6 +10,7 @@ import pytest
 from consciousness.parser.claude_export import parse_export
 from consciousness.store.db import Database
 from consciousness.store.vectors import VectorStore
+from tests.integration.conftest import _make_store
 
 pytestmark = pytest.mark.integration
 
@@ -86,7 +87,7 @@ def ingested(tmp_path) -> tuple[Database, VectorStore]:
     conversations, projects = parse_export(export_path)
 
     db = Database(tmp_path / "conversations.db").connect()
-    vectors = VectorStore(tmp_path / "vectors").connect()
+    vectors = _make_store(tmp_path / "vectors")
 
     for project in projects:
         db.upsert_project(project)

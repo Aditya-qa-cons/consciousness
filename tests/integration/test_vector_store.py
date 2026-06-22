@@ -3,8 +3,8 @@
 import pytest
 
 from consciousness.models import Role
-from consciousness.store.vectors import VectorStore
 from tests.conftest import make_message
+from tests.integration.conftest import _make_store
 
 pytestmark = pytest.mark.integration
 
@@ -46,13 +46,13 @@ def test_conversation_id_filter(seeded_vector_store):
 
 
 def test_empty_store_returns_no_results(tmp_path):
-    store = VectorStore(tmp_path / "empty").connect()
+    store = _make_store(tmp_path / "empty")
     hits = store.search("anything", limit=5)
     assert hits == []
 
 
 def test_long_message_is_chunked(tmp_path):
-    store = VectorStore(tmp_path / "chunked").connect()
+    store = _make_store(tmp_path / "chunked")
     long_text = "The quick brown fox jumps. " * 100  # ~2600 chars, > 512 chunk size
     msg = make_message("long-msg", "conv-x", Role.human, long_text, 0)
     store.index_message(msg)
@@ -61,14 +61,14 @@ def test_long_message_is_chunked(tmp_path):
 
 
 def test_empty_message_not_indexed(tmp_path):
-    store = VectorStore(tmp_path / "empty-msg").connect()
+    store = _make_store(tmp_path / "empty-msg")
     msg = make_message("blank", "conv-x", Role.human, "   ", 0)
     store.index_message(msg)
     assert store.count() == 0
 
 
 def test_upsert_idempotent(tmp_path):
-    store = VectorStore(tmp_path / "idem").connect()
+    store = _make_store(tmp_path / "idem")
     msg = make_message("m1", "conv-1", Role.human, "Hello world", 0)
     store.index_message(msg)
     count_after_first = store.count()

@@ -2,14 +2,19 @@
 
 Uses ChromaDB for persistence + sentence-transformers for local embeddings.
 No external API keys required — everything runs on-device.
+
+The encoder is lazy-loaded on first use and can be injected via the
+`encoder` constructor argument, which allows tests to substitute a
+network-free FakeEncoder without touching the real implementation.
 """
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Protocol
 
 import chromadb
+import numpy as np
 from chromadb.config import Settings
-from sentence_transformers import SentenceTransformer
 
 from consciousness.models import Message, Role
 
@@ -18,12 +23,16 @@ _COLLECTION = "messages"
 _CHUNK_SIZE = 512  # chars per chunk
 
 
+class Encoder(Protocol):
+    def encode(self, texts: list[str], show_progress_bar: bool = False) -> np.ndarray: ...
+
+
 @dataclass
 class VectorHit:
     message_id: str
     conversation_id: str
     chunk_text: str
-    score: float  # lower = more similar (L2 distance)
+    score: float  # lower = more similar (cosine distance)
 
 
 def _chunk_text(text: str, size: int = _CHUNK_SIZE) -> list[str]:
@@ -40,11 +49,15 @@ def _chunk_text(text: str, size: int = _CHUNK_SIZE) -> list[str]:
 
 
 class VectorStore:
-    def __init__(self, data_dir: Path):
+    def __init__(self, data_dir: Path, encoder: Encoder | None = None):
         self._data_dir = data_dir
         self._client: chromadb.PersistentClient | None = None
-        self._collection = None
-        self._model: SentenceTransformer | None = None
+        self._collection: Any = None
+        # If an encoder is injected (e.g. FakeEncoder in tests) it is used
+        # directly; otherwise the real SentenceTransformer is lazy-loaded on
+        # first encode call so that creating an empty store never hits the network.
+        self._encoder: Encoder | None = encoder
+        self._model_loaded = encoder is not None
 
     def connect(self) -> "VectorStore":
         self._data_dir.mkdir(parents=True, exist_ok=True)
@@ -56,7 +69,6 @@ class VectorStore:
             name=_COLLECTION,
             metadata={"hnsw:space": "cosine"},
         )
-        self._model = SentenceTransformer(_EMBED_MODEL)
         return self
 
     def __enter__(self):
@@ -72,10 +84,13 @@ class VectorStore:
         return self._collection
 
     @property
-    def model(self) -> SentenceTransformer:
-        if not self._model:
-            raise RuntimeError("VectorStore not connected")
-        return self._model
+    def model(self) -> Encoder:
+        if not self._model_loaded:
+            from sentence_transformers import SentenceTransformer
+
+            self._encoder = SentenceTransformer(_EMBED_MODEL)
+            self._model_loaded = True
+        return self._encoder
 
     # ── write ──────────────────────────────────────────────────────────────
 

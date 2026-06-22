@@ -14,7 +14,7 @@ them directly without going through the MCP transport layer.
 """
 
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from mcp.server import Server
@@ -282,7 +282,7 @@ async def recall_decision(db: Database, vectors: VectorStore, args: dict) -> lis
 async def get_recent_context(db: Database, args: dict) -> list[TextContent]:
     days = args.get("days", 7)
     project_filter = args.get("project")
-    cutoff = datetime.utcnow() - timedelta(days=days)
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
 
     project_id = None
     if project_filter:
