@@ -188,6 +188,18 @@ class Database:
             return None
         return self._conv_from_row(row, include_messages=True)
 
+    def get_conversation_updated_at(self, conversation_id: str) -> "datetime | None":
+        row = self.conn.execute(
+            "SELECT updated_at FROM conversations WHERE id = ?", (conversation_id,)
+        ).fetchone()
+        return _from_ts(row["updated_at"]) if row else None
+
+    def delete_knowledge_for_conversation(self, conversation_id: str):
+        """Remove all extracted knowledge rows for a conversation before re-extraction."""
+        self.conn.execute("DELETE FROM decisions WHERE conversation_id = ?", (conversation_id,))
+        self.conn.execute("DELETE FROM preferences WHERE conversation_id = ?", (conversation_id,))
+        self.conn.execute("DELETE FROM tech_choices WHERE conversation_id = ?", (conversation_id,))
+
     def get_messages(self, conversation_id: str) -> list[Message]:
         rows = self.conn.execute(
             "SELECT * FROM messages WHERE conversation_id = ? ORDER BY position", (conversation_id,)

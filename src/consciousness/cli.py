@@ -36,9 +36,16 @@ def cli(ctx, data_dir):
 @cli.command()
 @click.argument("export_path", type=click.Path(exists=True, path_type=Path))
 @click.option("--skip-extraction/--no-skip-extraction", default=False, help="Skip knowledge extraction pass")
+@click.option(
+    "--force/--no-force", default=False,
+    help="Re-process all conversations even if unchanged (default: skip unchanged)",
+)
 @click.pass_context
-def ingest(ctx, export_path: Path, skip_extraction: bool):
+def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool):
     """Parse a Claude.ai export file and index it into the local store.
+
+    By default, conversations that haven't changed since the last ingest are
+    skipped. Use --force to re-index everything unconditionally.
 
     EXPORT_PATH: path to the exported .zip or conversations.json file.
     """
@@ -75,6 +82,9 @@ def ingest(ctx, export_path: Path, skip_extraction: bool):
 
         redaction_count = 0
         excluded_count = 0
+        new_count = 0
+        updated_count = 0
+        skipped_count = 0
 
         for conv in conversations:
             if db.is_excluded(conv):
@@ -83,6 +93,26 @@ def ingest(ctx, export_path: Path, skip_extraction: bool):
                 progress.advance(task_vec)
                 progress.advance(task_ext)
                 continue
+
+            stored_updated_at = db.get_conversation_updated_at(conv.id)
+            is_new = stored_updated_at is None
+
+            if not force and not is_new:
+                # Compare timestamps; skip if the stored version is current or newer.
+                # Both values are timezone-aware UTC datetimes.
+                conv_ts = conv.updated_at
+                if conv_ts is not None and stored_updated_at >= conv_ts:
+                    skipped_count += 1
+                    progress.advance(task_db)
+                    progress.advance(task_vec)
+                    progress.advance(task_ext)
+                    continue
+
+            if is_new:
+                new_count += 1
+            else:
+                updated_count += 1
+                db.delete_knowledge_for_conversation(conv.id)
 
             for msg in conv.messages:
                 clean, findings = redact(msg.content)
@@ -113,8 +143,16 @@ def ingest(ctx, export_path: Path, skip_extraction: bool):
         db.commit()
 
     s = db.stats()
+    parts = []
+    if new_count:
+        parts.append(f"[green]{new_count} new[/green]")
+    if updated_count:
+        parts.append(f"[cyan]{updated_count} updated[/cyan]")
+    if skipped_count:
+        parts.append(f"[dim]{skipped_count} unchanged[/dim]")
+    delta_summary = ", ".join(parts) if parts else f"{s['conversations']} total"
     console.print(
-        f"\n[bold green]Done.[/bold green] "
+        f"\n[bold green]Done.[/bold green] {delta_summary} — "
         f"{s['conversations']} conversations, {s['messages']} messages, "
         f"{vectors.count()} vector chunks, "
         f"{s['decisions']} decisions, {s['tech_choices']} tech choices"
