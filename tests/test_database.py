@@ -241,3 +241,69 @@ def test_not_excluded_when_no_rules_match(db):
     db.add_exclude_rule(ExcludeRule(pattern="other-conv", rule_type="conversation_id"))
     db.commit()
     assert db.is_excluded(conv) is False
+
+
+# ── incremental ingest helpers ────────────────────────────────────────────────
+
+
+def test_get_conversation_updated_at_returns_none_for_missing(db):
+    assert db.get_conversation_updated_at("nonexistent") is None
+
+
+def test_get_conversation_updated_at_returns_timestamp(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    ts = db.get_conversation_updated_at("conv-1")
+    assert ts == _utc(2024, 6, 1, 10, 1)
+
+
+def test_delete_knowledge_for_conversation(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.upsert_decision(Decision(
+        id="d1", topic="Auth", conclusion="Use JWT.", confidence=0.9, conversation_id="conv-1",
+    ))
+    db.upsert_preference(Preference(
+        id="p1", area="Python", preference="I prefer Python.", conversation_id="conv-1",
+    ))
+    db.upsert_tech_choice(TechChoice(
+        id="tc1", technology="Redis", verdict="Use Redis.", conversation_id="conv-1",
+    ))
+    db.commit()
+
+    assert db.stats()["decisions"] == 1
+    assert len(db.list_preferences()) == 1
+    assert len(db.list_tech_choices()) == 1
+
+    db.delete_knowledge_for_conversation("conv-1")
+    db.commit()
+
+    assert db.stats()["decisions"] == 0
+    assert len(db.list_preferences()) == 0
+    assert len(db.list_tech_choices()) == 0
+
+
+def test_delete_knowledge_leaves_other_conversations_untouched(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.upsert_project(Project(id="proj-2", name="Other Project", created_at=_utc(2024, 1, 1)))
+    conv2 = Conversation(
+        id="conv-2", title="Other", project_id="proj-2",
+        created_at=_utc(2024, 6, 2), updated_at=_utc(2024, 6, 2),
+    )
+    db.upsert_conversation(conv2)
+    db.upsert_decision(Decision(
+        id="d1", topic="Auth", conclusion="Use JWT.", confidence=0.9, conversation_id="conv-1",
+    ))
+    db.upsert_decision(Decision(
+        id="d2", topic="DB", conclusion="Use Postgres.", confidence=0.9, conversation_id="conv-2",
+    ))
+    db.commit()
+
+    db.delete_knowledge_for_conversation("conv-1")
+    db.commit()
+
+    remaining = db.list_decisions()
+    assert len(remaining) == 1
+    assert remaining[0].id == "d2"
