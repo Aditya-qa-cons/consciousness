@@ -40,12 +40,20 @@ def cli(ctx, data_dir):
     "--force/--no-force", default=False,
     help="Re-process all conversations even if unchanged (default: skip unchanged)",
 )
+@click.option(
+    "--llm-extract/--no-llm-extract", default=False,
+    help="Use Claude Haiku for knowledge extraction (requires ANTHROPIC_API_KEY; slower but higher recall)",
+)
 @click.pass_context
-def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool):
-    """Parse a Claude.ai export file and index it into the local store.
+def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extract: bool):
+    """Parse an export file and index it into the local store.
 
+    Supports Claude.ai exports (ZIP or JSON) and ChatGPT exports (ZIP).
     By default, conversations that haven't changed since the last ingest are
     skipped. Use --force to re-index everything unconditionally.
+
+    Use --llm-extract to run Claude Haiku over each conversation for higher-
+    quality knowledge extraction (requires ANTHROPIC_API_KEY).
 
     EXPORT_PATH: path to the exported .zip or conversations.json file.
     """
@@ -55,6 +63,7 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool):
         extract_preferences,
         extract_tech_choices,
     )
+    from consciousness.extractors.llm import LLMExtractor
     from consciousness.extractors.sensitive import redact
 
     data_dir: Path = ctx.obj["data_dir"]
@@ -68,6 +77,15 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool):
 
     for project in projects:
         db.upsert_project(project)
+
+    llm_extractor = None
+    if llm_extract and not skip_extraction:
+        llm_extractor = LLMExtractor()
+        if not llm_extractor.is_available():
+            console.print(
+                "[yellow]Warning:[/yellow] --llm-extract requires ANTHROPIC_API_KEY; falling back to regex extraction"
+            )
+            llm_extractor = None
 
     with Progress(
         SpinnerColumn(),
@@ -128,15 +146,23 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool):
 
             if not skip_extraction:
                 existing = db.find_active_decisions(conv.title[:30])
-                new_decisions = extract_decisions(conv)
+
+                llm_decisions, llm_prefs, llm_tcs = [], [], []
+                if llm_extractor is not None:
+                    llm_decisions, llm_prefs, llm_tcs = llm_extractor.extract(conv)
+
+                new_decisions = llm_decisions or extract_decisions(conv)
+                new_prefs = llm_prefs or extract_preferences(conv)
+                new_tcs = llm_tcs or extract_tech_choices(conv)
+
                 for d in new_decisions:
                     supersessions = apply_temporal_tracking([d], existing)
                     for old_id, new_id in supersessions:
                         db.supersede_decision(old_id, new_id)
                     db.upsert_decision(d)
-                for pref in extract_preferences(conv):
+                for pref in new_prefs:
                     db.upsert_preference(pref)
-                for tc in extract_tech_choices(conv):
+                for tc in new_tcs:
                     db.upsert_tech_choice(tc)
             progress.advance(task_ext)
 
