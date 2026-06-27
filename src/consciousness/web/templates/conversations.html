@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block title %}Conversations — Consciousness{% endblock %}
+{% block content %}
+<div class="filter-row">
+  <h1 style="margin-bottom:0">Conversations</h1>
+  <form method="get" action="/conversations" style="margin-left:auto">
+    <select name="project_id" onchange="this.form.submit()">
+      <option value="">All projects</option>
+      {% for p in projects %}
+      <option value="{{ p.id }}"{% if p.id == project_id %} selected{% endif %}>{{ p.name }}</option>
+      {% endfor %}
+    </select>
+  </form>
+</div>
+
+{% if conversations %}
+  {% for c in conversations %}
+  <div class="card">
+    <a href="/conversations/{{ c.id }}" class="conv-title">{{ c.title }}</a>
+    <div class="meta">
+      {{ c.updated_at.strftime('%Y-%m-%d') if c.updated_at else '' }}
+      {% if c.project_id and c.project_id in project_map %}
+       · {{ project_map[c.project_id] }}
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+  <div class="pager">
+    {% if page > 1 %}<a href="/conversations?project_id={{ project_id }}&amp;page={{ page - 1 }}">← Prev</a>{% endif %}
+    {% if has_next %}<a href="/conversations?project_id={{ project_id }}&amp;page={{ page + 1 }}">Next →</a>{% endif %}
+  </div>
+{% else %}
+  <p class="empty">No conversations found.</p>
+{% endif %}
+{% endblock %}

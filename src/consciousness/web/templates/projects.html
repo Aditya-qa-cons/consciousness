@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block title %}Consciousness{% endblock %}
+{% block content %}
+<h1>Your conversation history</h1>
+
+<div class="stat-grid">
+  <div class="stat-box"><div class="stat-num">{{ stats.conversations }}</div><div class="stat-label">Conversations</div></div>
+  <div class="stat-box"><div class="stat-num">{{ stats.messages }}</div><div class="stat-label">Messages</div></div>
+  <div class="stat-box"><div class="stat-num">{{ stats.decisions }}</div><div class="stat-label">Decisions</div></div>
+  <div class="stat-box"><div class="stat-num">{{ stats.tech_choices }}</div><div class="stat-label">Tech choices</div></div>
+</div>
+
+<h2>Projects</h2>
+
+{% if projects %}
+  {% for p in projects %}
+  <div class="card">
+    <a href="/conversations?project_id={{ p.id }}"><strong>{{ p.name }}</strong></a>
+    <div class="meta">{{ p.conversation_count }} conversation{% if p.conversation_count != 1 %}s{% endif %}</div>
+  </div>
+  {% endfor %}
+{% else %}
+  <p class="empty">No data yet — run <code>consciousness ingest &lt;export.zip&gt;</code> to get started.</p>
+{% endif %}
+{% endblock %}

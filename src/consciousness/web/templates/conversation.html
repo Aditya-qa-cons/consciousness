@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}{{ conv.title }} — Consciousness{% endblock %}
+{% block content %}
+<p class="meta" style="margin-bottom:8px"><a href="/conversations">← Conversations</a></p>
+<h1>{{ conv.title }}</h1>
+<p class="meta" style="margin-bottom:20px">
+  {{ conv.messages | length }} messages
+  {% if conv.updated_at %} · {{ conv.updated_at.strftime('%Y-%m-%d %H:%M UTC') }}{% endif %}
+</p>
+
+{% for msg in conv.messages %}
+<div class="msg {{ 'msg-human' if msg.role.value == 'human' else 'msg-assistant' }}">
+  <div style="margin-bottom:6px">
+    <span class="badge {{ 'badge-human' if msg.role.value == 'human' else 'badge-assistant' }}">
+      {{ 'Human' if msg.role.value == 'human' else 'Assistant' }}
+    </span>
+    {% if msg.timestamp %}
+    <span class="meta" style="display:inline;margin-left:8px">{{ msg.timestamp.strftime('%H:%M') }}</span>
+    {% endif %}
+  </div>
+  {{ msg.content }}
+</div>
+{% endfor %}
+{% endblock %}
