@@ -44,8 +44,12 @@ def cli(ctx, data_dir):
     "--llm-extract/--no-llm-extract", default=False,
     help="Use Claude Haiku for knowledge extraction (requires ANTHROPIC_API_KEY; slower but higher recall)",
 )
+@click.option(
+    "--summarize/--no-summarize", default=False,
+    help="Generate 2-3 sentence summaries per conversation (uses Haiku if ANTHROPIC_API_KEY set, else text extraction)",
+)
 @click.pass_context
-def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extract: bool):
+def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extract: bool, summarize: bool):
     """Parse an export file and index it into the local store.
 
     Supports Claude.ai exports (ZIP or JSON) and ChatGPT exports (ZIP).
@@ -54,6 +58,7 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
 
     Use --llm-extract to run Claude Haiku over each conversation for higher-
     quality knowledge extraction (requires ANTHROPIC_API_KEY).
+    Use --summarize to store a 2-3 sentence summary for each conversation.
 
     EXPORT_PATH: path to the exported .zip or conversations.json file.
     """
@@ -65,6 +70,8 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
     )
     from consciousness.extractors.llm import LLMExtractor
     from consciousness.extractors.sensitive import redact
+    from consciousness.memory.summarizer import ConversationSummarizer
+    from consciousness.models import ConversationSummary
 
     data_dir: Path = ctx.obj["data_dir"]
     console.print(f"[bold]Parsing export:[/bold] {export_path}")
@@ -87,6 +94,12 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
             )
             llm_extractor = None
 
+    summarizer = None
+    if summarize:
+        summarizer = ConversationSummarizer()
+        if not summarizer.is_available():
+            console.print("[dim]Note:[/dim] No ANTHROPIC_API_KEY — summaries will use text extraction fallback")
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -97,6 +110,7 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
         task_db = progress.add_task("Writing to database…", total=len(conversations))
         task_vec = progress.add_task("Building vector index…", total=len(conversations))
         task_ext = progress.add_task("Extracting knowledge…", total=len(conversations))
+        task_sum = progress.add_task("Generating summaries…", total=len(conversations)) if summarize else None
 
         redaction_count = 0
         excluded_count = 0
@@ -110,6 +124,8 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
                 progress.advance(task_db)
                 progress.advance(task_vec)
                 progress.advance(task_ext)
+                if task_sum is not None:
+                    progress.advance(task_sum)
                 continue
 
             stored_updated_at = db.get_conversation_updated_at(conv.id)
@@ -120,10 +136,19 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
                 # Both values are timezone-aware UTC datetimes.
                 conv_ts = conv.updated_at
                 if conv_ts is not None and stored_updated_at >= conv_ts:
+                    # Still generate a summary if none exists yet.
+                    if summarizer is not None and db.get_summary(conv.id) is None:
+                        db.upsert_summary(ConversationSummary(
+                            conversation_id=conv.id,
+                            summary=summarizer.summarize(conv),
+                            model=summarizer.model_used(),
+                        ))
                     skipped_count += 1
                     progress.advance(task_db)
                     progress.advance(task_vec)
                     progress.advance(task_ext)
+                    if task_sum is not None:
+                        progress.advance(task_sum)
                     continue
 
             if is_new:
@@ -165,6 +190,15 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
                 for tc in new_tcs:
                     db.upsert_tech_choice(tc)
             progress.advance(task_ext)
+
+            if summarizer is not None:
+                db.upsert_summary(ConversationSummary(
+                    conversation_id=conv.id,
+                    summary=summarizer.summarize(conv),
+                    model=summarizer.model_used(),
+                ))
+            if task_sum is not None:
+                progress.advance(task_sum)
 
         db.commit()
 

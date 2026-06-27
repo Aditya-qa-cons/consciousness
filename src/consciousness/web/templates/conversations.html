@@ -17,7 +17,10 @@
   {% for c in conversations %}
   <div class="card">
     <a href="/conversations/{{ c.id }}" class="conv-title">{{ c.title }}</a>
-    <div class="meta">
+    {% if c.id in summaries %}
+    <div style="font-size:.85em;color:#555;margin-top:5px;line-height:1.5">{{ summaries[c.id].summary }}</div>
+    {% endif %}
+    <div class="meta" style="margin-top:4px">
       {{ c.updated_at.strftime('%Y-%m-%d') if c.updated_at else '' }}
       {% if c.project_id and c.project_id in project_map %}
        · {{ project_map[c.project_id] }}

@@ -6,7 +6,17 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from consciousness.models import Conversation, Decision, ExcludeRule, Message, Preference, Project, Role, TechChoice
+from consciousness.models import (
+    Conversation,
+    ConversationSummary,
+    Decision,
+    ExcludeRule,
+    Message,
+    Preference,
+    Project,
+    Role,
+    TechChoice,
+)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -76,6 +86,13 @@ CREATE INDEX IF NOT EXISTS idx_decisions_topic     ON decisions(topic);
 CREATE INDEX IF NOT EXISTS idx_decisions_conv      ON decisions(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_preferences_area    ON preferences(area);
 CREATE INDEX IF NOT EXISTS idx_tech_choices_tech   ON tech_choices(technology);
+
+CREATE TABLE IF NOT EXISTS summaries (
+    conversation_id TEXT PRIMARY KEY REFERENCES conversations(id) ON DELETE CASCADE,
+    summary         TEXT NOT NULL,
+    generated_at    TEXT NOT NULL,
+    model           TEXT
+);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     message_id   UNINDEXED,
@@ -278,7 +295,8 @@ class Database:
                 (SELECT COUNT(*) FROM projects)      as projects,
                 (SELECT COUNT(*) FROM decisions)     as decisions,
                 (SELECT COUNT(*) FROM preferences)   as preferences,
-                (SELECT COUNT(*) FROM tech_choices)  as tech_choices
+                (SELECT COUNT(*) FROM tech_choices)  as tech_choices,
+                (SELECT COUNT(*) FROM summaries)     as summaries
             """
         ).fetchone()
         return dict(row)
@@ -336,6 +354,31 @@ class Database:
     def list_tech_choices(self) -> list[TechChoice]:
         rows = self.conn.execute("SELECT * FROM tech_choices ORDER BY extracted_at DESC").fetchall()
         return [self._tech_from_row(r) for r in rows]
+
+    # ── summaries ─────────────────────────────────────────────────────────────
+
+    def upsert_summary(self, s: ConversationSummary):
+        self.conn.execute(
+            """INSERT OR REPLACE INTO summaries(conversation_id, summary, generated_at, model)
+               VALUES (?,?,?,?)""",
+            (s.conversation_id, s.summary, _ts(s.generated_at), s.model),
+        )
+
+    def get_summary(self, conversation_id: str) -> ConversationSummary | None:
+        row = self.conn.execute(
+            "SELECT * FROM summaries WHERE conversation_id = ?", (conversation_id,)
+        ).fetchone()
+        return self._summary_from_row(row) if row else None
+
+    def get_summaries(self, conversation_ids: list[str]) -> dict[str, ConversationSummary]:
+        if not conversation_ids:
+            return {}
+        placeholders = ",".join("?" * len(conversation_ids))
+        rows = self.conn.execute(
+            f"SELECT * FROM summaries WHERE conversation_id IN ({placeholders})",
+            conversation_ids,
+        ).fetchall()
+        return {r["conversation_id"]: self._summary_from_row(r) for r in rows}
 
     # ── exclude rules ─────────────────────────────────────────────────────────
 
@@ -410,6 +453,14 @@ class Database:
             preference=r["preference"],
             conversation_id=r["conversation_id"],
             extracted_at=_from_ts(r["extracted_at"]),
+        )
+
+    def _summary_from_row(self, r: sqlite3.Row) -> ConversationSummary:
+        return ConversationSummary(
+            conversation_id=r["conversation_id"],
+            summary=r["summary"],
+            generated_at=_from_ts(r["generated_at"]) or datetime.now(),
+            model=r["model"],
         )
 
     def _tech_from_row(self, r: sqlite3.Row) -> TechChoice:
