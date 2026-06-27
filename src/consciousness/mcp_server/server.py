@@ -258,22 +258,39 @@ async def search_history(db: Database, vectors: VectorStore, args: dict) -> list
             convs = db.list_conversations(project_id=matched[0].id, limit=1000)
             conv_ids = [c.id for c in convs]
 
-    hits = vectors.search(query, limit=limit, role_filter=role_filter, conversation_ids=conv_ids)
+    # Run vector search and FTS in parallel logical steps; merge with RRF.
+    vector_hits = vectors.search(query, limit=limit * 2, role_filter=role_filter, conversation_ids=conv_ids)
+    fts_role = role_filter.value if role_filter else None
+    fts_hits = db.fulltext_search(query, limit=limit * 2, conversation_ids=conv_ids, role=fts_role)
 
-    if not hits:
+    # RRF: score = Σ 1/(k + rank), k=60, rank is 1-based position in each list.
+    _K = 60
+    rrf: dict[str, float] = {}
+    best_snippet: dict[str, str] = {}   # conversation_id → best text excerpt
+
+    for rank, hit in enumerate(vector_hits, start=1):
+        cid = hit.conversation_id
+        rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (_K + rank)
+        if cid not in best_snippet:
+            best_snippet[cid] = hit.chunk_text[:400]
+
+    for rank, hit in enumerate(fts_hits, start=1):
+        cid = hit["conversation_id"]
+        rrf[cid] = rrf.get(cid, 0.0) + 1.0 / (_K + rank)
+        if cid not in best_snippet:
+            best_snippet[cid] = hit["snippet"]
+
+    if not rrf:
         return [TextContent(type="text", text="No results found.")]
 
-    lines = [f"Found {len(hits)} results for: **{query}**\n"]
-    seen_convs: dict[str, str] = {}
+    ranked = sorted(rrf.items(), key=lambda x: x[1], reverse=True)[:limit]
 
-    for hit in hits:
-        if hit.conversation_id not in seen_convs:
-            conv = db.get_conversation(hit.conversation_id)
-            seen_convs[hit.conversation_id] = conv.title if conv else hit.conversation_id
-
-        title = seen_convs[hit.conversation_id]
-        lines.append(f"### [{title}] (id: {hit.conversation_id})  _{hit.relevance_label} relevance_")
-        lines.append(f"> {hit.chunk_text[:400]}")
+    lines = [f"Found {len(ranked)} results for: **{query}**\n"]
+    for conv_id, score in ranked:
+        conv = db.get_conversation(conv_id)
+        title = conv.title if conv else conv_id
+        lines.append(f"### [{title}] (id: {conv_id})")
+        lines.append(f"> {best_snippet[conv_id]}")
         lines.append("")
 
     return [TextContent(type="text", text="\n".join(lines))]

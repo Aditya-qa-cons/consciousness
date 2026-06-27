@@ -307,3 +307,65 @@ def test_delete_knowledge_leaves_other_conversations_untouched(db):
     remaining = db.list_decisions()
     assert len(remaining) == 1
     assert remaining[0].id == "d2"
+
+
+# ── full-text search ──────────────────────────────────────────────────────────
+
+
+def test_fulltext_search_finds_exact_word(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    results = db.fulltext_search("Hello")
+    assert len(results) > 0
+    assert any(r["conversation_id"] == "conv-1" for r in results)
+
+
+def test_fulltext_search_returns_snippet(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    results = db.fulltext_search("Hello")
+    assert results[0]["snippet"] != ""
+
+
+def test_fulltext_search_no_match_returns_empty(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    results = db.fulltext_search("xyzzy_nonexistent_word")
+    assert results == []
+
+
+def test_fulltext_search_role_filter(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    human_results = db.fulltext_search("Hello", role="human")
+    assistant_results = db.fulltext_search("Hello", role="assistant")
+    assert all(r["role"] == "human" for r in human_results)
+    assert all(r["role"] == "assistant" for r in assistant_results)
+
+
+def test_fulltext_search_conversation_id_filter(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    results = db.fulltext_search("Hello", conversation_ids=["conv-1"])
+    assert all(r["conversation_id"] == "conv-1" for r in results)
+    results_other = db.fulltext_search("Hello", conversation_ids=["other-conv"])
+    assert results_other == []
+
+
+def test_rebuild_fts_repopulates_from_messages(db):
+    db.upsert_project(make_project())
+    db.upsert_conversation(make_conversation())
+    db.commit()
+    # Manually wipe FTS to simulate a pre-FTS install
+    db.conn.execute("DELETE FROM messages_fts")
+    db.commit()
+    assert db.fulltext_search("Hello") == []
+
+    db.rebuild_fts()
+    db.commit()
+    assert len(db.fulltext_search("Hello")) > 0

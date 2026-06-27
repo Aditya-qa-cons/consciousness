@@ -380,6 +380,9 @@ def rebuild_index(ctx):
                 progress.advance(task)
             offset += 100
 
+    console.print("Rebuilding full-text search index…")
+    db.rebuild_fts()
+    db.commit()
     db.close()
     console.print(f"[bold green]Done.[/bold green] {vectors.count()} chunks indexed.")
 

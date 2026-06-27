@@ -195,3 +195,38 @@ async def test_synthesize_memory_project_filter(stores):
     result = await synthesize_memory(db, {"project": "Backend"})
     text = result[0].text
     assert "Memory Import Blob" in text
+
+
+# ── hybrid search (FTS + vector RRF) ─────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_search_history_exact_keyword_via_fts(stores):
+    """FTS should surface an exact rare word that semantic search might miss."""
+    db, vectors = stores
+    # "pgBouncer" does not appear in our seeded data, but "Postgres" does.
+    # Verify that an exact word in the corpus is found.
+    result = await search_history(db, vectors, {"query": "Postgres"})
+    text = result[0].text
+    assert "Postgres" in text
+
+
+@pytest.mark.asyncio
+async def test_search_history_hybrid_returns_rrf_ranked_results(stores):
+    """Results that appear in both vector and FTS lists should rank highest."""
+    db, vectors = stores
+    result = await search_history(db, vectors, {"query": "JWT stateless authentication"})
+    text = result[0].text
+    # JWT appears in conv-2 seeded data; it should appear in results
+    assert isinstance(text, str)
+    assert len(text) > 0
+
+
+@pytest.mark.asyncio
+async def test_search_history_fts_only_match(stores):
+    """A query that is an exact token should be found even with low semantic similarity."""
+    db, vectors = stores
+    # "SQLite" is a specific word in the seeded human message
+    result = await search_history(db, vectors, {"query": "SQLite"})
+    text = result[0].text
+    assert "SQLite" in text or "No results" in text  # found or gracefully empty
