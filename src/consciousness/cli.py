@@ -437,6 +437,47 @@ def mcp_config(ctx):
     console.print("  Web:     Claude.ai → Settings → Claude Code → MCP servers\n")
 
 
+# ── ui ───────────────────────────────────────────────────────────────────────
+
+
+@cli.command("ui")
+@click.option("--port", default=8080, show_default=True, help="Port to listen on")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address")
+@click.option("--no-open", is_flag=True, default=False, help="Do not open the browser automatically")
+@click.pass_context
+def ui(ctx, port: int, host: str, no_open: bool):
+    """Start the local web UI (read-only browser interface).
+
+    Requires the web extra: pip install 'consciousness[web]'
+    """
+    try:
+        import uvicorn
+
+        from consciousness.web.app import create_app
+    except ImportError:
+        console.print(
+            "[red]Web UI requires extra dependencies.[/red] "
+            "Install with: pip install 'consciousness[web]'"
+        )
+        raise SystemExit(1)
+
+    data_dir: Path = ctx.obj["data_dir"]
+    if not (data_dir / "conversations.db").exists():
+        console.print("[red]No data found.[/red] Run `consciousness ingest <export.zip>` first.")
+        raise SystemExit(1)
+
+    app = create_app(data_dir)
+    url = f"http://{host}:{port}"
+    console.print(f"[bold green]Consciousness UI[/bold green] → {url}")
+    console.print("Press Ctrl+C to stop.\n")
+
+    if not no_open:
+        import webbrowser
+        webbrowser.open(url)
+
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
 # ── exclude ───────────────────────────────────────────────────────────────────
 
 

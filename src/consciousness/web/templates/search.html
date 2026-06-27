@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Search — Consciousness{% endblock %}
+{% block content %}
+<h1>Search</h1>
+<form method="get" action="/search" class="search-bar">
+  <input type="search" name="q" value="{{ q | e }}" placeholder="Search your conversations…" autofocus>
+  <button type="submit">Search</button>
+</form>
+
+{% if q %}
+  {% if results %}
+    <p class="meta" style="margin-bottom:14px">{{ results | length }} conversation{% if results | length != 1 %}s{% endif %} matched</p>
+    {% for r in results %}
+    <div class="card">
+      <a href="/conversations/{{ r.conversation_id }}" class="conv-title">{{ r.title }}</a>
+      <div class="meta" style="margin-top:4px">
+        <span class="badge {{ 'badge-human' if r.role == 'human' else 'badge-assistant' }}">
+          {{ 'Human' if r.role == 'human' else 'Assistant' }}
+        </span>
+      </div>
+      <div class="snippet" style="margin-top:6px">{{ r.snippet | highlight | safe }}</div>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">No results for <strong>{{ q | e }}</strong>.</p>
+  {% endif %}
+{% endif %}
+{% endblock %}

@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Decisions — Consciousness{% endblock %}
+{% block content %}
+<h1>Knowledge Dashboard</h1>
+
+<h2>Decisions ({{ decisions | length }})</h2>
+{% if decisions %}
+<table>
+  <thead><tr><th>Topic</th><th>Conclusion</th><th>Confidence</th></tr></thead>
+  <tbody>
+  {% for d in decisions %}
+  <tr>
+    <td><a href="/conversations/{{ d.conversation_id }}">{{ d.topic }}</a></td>
+    <td>{{ d.conclusion }}</td>
+    <td>
+      {{ "%.0f%%" | format(d.confidence * 100) }}
+      <span class="conf-bar" style="width:{{ (d.confidence * 60) | int }}px"></span>
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No decisions extracted yet. Re-ingest with <code>--no-skip-extraction</code> to populate.</p>
+{% endif %}
+
+<h2>Preferences ({{ preferences | length }})</h2>
+{% if preferences %}
+<table>
+  <thead><tr><th>Area</th><th>Preference</th></tr></thead>
+  <tbody>
+  {% for p in preferences %}
+  <tr>
+    <td>{{ p.area }}</td>
+    <td><a href="/conversations/{{ p.conversation_id }}">{{ p.preference }}</a></td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No preferences extracted yet.</p>
+{% endif %}
+
+<h2>Tech Choices ({{ tech_choices | length }})</h2>
+{% if tech_choices %}
+<table>
+  <thead><tr><th>Technology</th><th>Verdict</th><th>Rationale</th></tr></thead>
+  <tbody>
+  {% for t in tech_choices %}
+  <tr>
+    <td><strong>{{ t.technology }}</strong></td>
+    <td><a href="/conversations/{{ t.conversation_id }}">{{ t.verdict }}</a></td>
+    <td class="meta">{{ t.rationale or '' }}</td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No tech choices extracted yet.</p>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Consciousness{% endblock %}</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font:15px/1.6 system-ui,-apple-system,sans-serif;background:#f4f4f6;color:#1a1a1a}
+    a{color:#4f62e8;text-decoration:none}
+    a:hover{text-decoration:underline}
+    code{font-family:ui-monospace,monospace;font-size:.88em;background:#f0f0f3;padding:1px 4px;border-radius:3px}
+    nav{background:#14142b;padding:0 28px;display:flex;align-items:center;gap:28px;height:52px;position:sticky;top:0;z-index:10}
+    .brand{color:#fff;font-weight:700;font-size:1.05em;letter-spacing:-.01em}
+    nav a{color:#9ba3cc;font-size:.88em;font-weight:500}
+    nav a:hover{color:#fff;text-decoration:none}
+    .container{max-width:880px;margin:0 auto;padding:28px 16px}
+    h1{font-size:1.35em;font-weight:700;margin-bottom:18px;color:#111}
+    h2{font-size:1.05em;font-weight:600;margin:28px 0 12px;color:#333}
+    .card{background:#fff;border-radius:10px;padding:16px 20px;margin-bottom:10px;border:1px solid #e8e8ec;transition:box-shadow .15s}
+    .card:hover{box-shadow:0 2px 8px rgba(0,0,0,.07)}
+    .meta{font-size:.8em;color:#999;margin-top:4px}
+    .badge{display:inline-block;border-radius:4px;padding:1px 7px;font-size:.75em;font-weight:600;vertical-align:middle}
+    .badge-human{background:#e8edff;color:#4f62e8}
+    .badge-assistant{background:#e6faf4;color:#059669}
+    .msg{padding:14px 18px;margin-bottom:10px;border-radius:8px;white-space:pre-wrap;font-size:.92em;line-height:1.65;word-break:break-word}
+    .msg-human{background:#f0f3ff;border-left:3px solid #4f62e8}
+    .msg-assistant{background:#fff;border:1px solid #e8e8ec;border-left:3px solid #10b981}
+    .search-bar{display:flex;gap:8px;margin-bottom:22px}
+    .search-bar input{flex:1;padding:9px 13px;border:1px solid #dde;border-radius:7px;font-size:.95em;outline:none}
+    .search-bar input:focus{border-color:#4f62e8;box-shadow:0 0 0 3px rgba(79,98,232,.1)}
+    .search-bar button{padding:9px 18px;background:#4f62e8;color:#fff;border:none;border-radius:7px;cursor:pointer;font-size:.9em;font-weight:600}
+    .search-bar button:hover{background:#3d50d4}
+    mark{background:#fef9c3;border-radius:2px;padding:0 2px}
+    .pager{display:flex;gap:12px;margin-top:20px;justify-content:center}
+    .pager a{padding:7px 16px;background:#fff;border:1px solid #e0e0e8;border-radius:7px;font-size:.88em;color:#444}
+    .pager a:hover{background:#f0f3ff;text-decoration:none}
+    table{width:100%;border-collapse:collapse;background:#fff;border-radius:10px;overflow:hidden;border:1px solid #e8e8ec}
+    th,td{text-align:left;padding:10px 14px;border-bottom:1px solid #f0f0f4;font-size:.88em}
+    th{color:#777;font-weight:600;background:#fafafa}
+    tr:last-child td{border-bottom:none}
+    .conf-bar{display:inline-block;height:5px;background:#10b981;border-radius:3px;vertical-align:middle;margin-left:6px}
+    select{padding:7px 10px;border:1px solid #dde;border-radius:7px;font-size:.88em;background:#fff;cursor:pointer}
+    .filter-row{display:flex;align-items:center;gap:12px;margin-bottom:18px;flex-wrap:wrap}
+    .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:24px}
+    .stat-box{background:#fff;border:1px solid #e8e8ec;border-radius:10px;padding:14px 16px;text-align:center}
+    .stat-num{font-size:1.6em;font-weight:700;color:#4f62e8}
+    .stat-label{font-size:.78em;color:#999;margin-top:2px}
+    .empty{color:#aaa;font-size:.9em;padding:20px 0}
+    .snippet{font-size:.85em;color:#555;margin-top:4px;line-height:1.5}
+    .conv-title{font-weight:600;font-size:.95em}
+  </style>
+</head>
+<body>
+<nav>
+  <span class="brand">consciousness</span>
+  <a href="/">Home</a>
+  <a href="/conversations">Conversations</a>
+  <a href="/search">Search</a>
+  <a href="/decisions">Decisions</a>
+</nav>
+<div class="container">
+  {% block content %}{% endblock %}
+</div>
+</body>
+</html>
