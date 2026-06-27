@@ -52,10 +52,13 @@ def create_app(data_dir: Path) -> FastAPI:
             offset=offset,
         )
         has_next = len(convs) > _PAGE_SIZE
+        page_convs = convs[:_PAGE_SIZE]
         projects = db.list_projects()
         project_map = {p.id: p.name for p in projects}
+        summaries = db.get_summaries([c.id for c in page_convs])
         return templates.TemplateResponse(request, "conversations.html", {
-            "conversations": convs[:_PAGE_SIZE],
+            "conversations": page_convs,
+            "summaries": summaries,
             "project_map": project_map,
             "projects": projects,
             "project_id": project_id,

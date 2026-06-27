@@ -100,6 +100,15 @@ class TechChoice(BaseModel):
     extracted_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class ConversationSummary(BaseModel):
+    """2-3 sentence summary of a single conversation."""
+
+    conversation_id: str
+    summary: str
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    model: str | None = None  # None = text-extraction fallback
+
+
 class ExcludeRule(BaseModel):
     """A rule that prevents a conversation or project from being indexed."""
 

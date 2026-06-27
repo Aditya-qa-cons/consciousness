@@ -100,14 +100,20 @@ async def _build_memory_resource(db: Database) -> str:
                 seen_tech.add(tc.technology)
         lines.append("")
 
-    # Active conversations — last 7 days
+    # Active conversations — last 7 days, with summaries where available
     cutoff = datetime.now(timezone.utc) - timedelta(days=7)
     recent_convs = db.list_conversations(limit=100)
     recent = [c for c in recent_convs if c.updated_at and c.updated_at >= cutoff]
     if recent:
+        summaries = db.get_summaries([c.id for c in recent[:5]])
         lines.append(f"## Active This Week ({len(recent)} conversations)\n")
         for conv in recent[:5]:
-            lines.append(f"- {conv.title} ({conv.updated_at.strftime('%Y-%m-%d') if conv.updated_at else '?'})")
+            date = conv.updated_at.strftime('%Y-%m-%d') if conv.updated_at else '?'
+            s = summaries.get(conv.id)
+            if s:
+                lines.append(f"- **{conv.title}** ({date}): {s.summary}")
+            else:
+                lines.append(f"- {conv.title} ({date})")
         lines.append("")
 
     return "\n".join(lines)
@@ -378,15 +384,21 @@ async def get_recent_context(db: Database, args: dict) -> list[TextContent]:
     if not recent:
         return [TextContent(type="text", text=f"No conversations in the last {days} days.")]
 
+    summaries = db.get_summaries([c.id for c in recent])
+
     lines = [f"## Recent context — last {days} days ({len(recent)} conversations)\n"]
     for conv in recent:
         lines.append(f"### {conv.title}")
         lines.append(f"Updated: {conv.updated_at.strftime('%Y-%m-%d %H:%M')}")
-        full = db.get_conversation(conv.id)
-        if full and full.messages:
-            last_human = next((m for m in reversed(full.messages) if m.role == Role.human), None)
-            if last_human:
-                lines.append(f"Last question: {last_human.content[:200]}")
+        s = summaries.get(conv.id)
+        if s:
+            lines.append(s.summary)
+        else:
+            full = db.get_conversation(conv.id)
+            if full and full.messages:
+                last_human = next((m for m in reversed(full.messages) if m.role == Role.human), None)
+                if last_human:
+                    lines.append(f"Last question: {last_human.content[:200]}")
         lines.append("")
 
     return [TextContent(type="text", text="\n".join(lines))]
