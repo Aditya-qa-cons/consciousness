@@ -127,7 +127,14 @@ class ClaudeExportAdapter:
         if path.suffix == ".zip":
             try:
                 with zipfile.ZipFile(path) as zf:
-                    return "conversations.json" in zf.namelist()
+                    if "conversations.json" not in zf.namelist():
+                        return False
+                    with zf.open("conversations.json") as f:
+                        data = json.load(f)
+                # Claude format has 'chat_messages'; ChatGPT has 'mapping'
+                if isinstance(data, list) and data:
+                    return "chat_messages" in data[0]
+                return True  # empty list — default to Claude
             except Exception:
                 return False
         if path.suffix == ".json":
