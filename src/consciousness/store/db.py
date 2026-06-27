@@ -76,6 +76,14 @@ CREATE INDEX IF NOT EXISTS idx_decisions_topic     ON decisions(topic);
 CREATE INDEX IF NOT EXISTS idx_decisions_conv      ON decisions(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_preferences_area    ON preferences(area);
 CREATE INDEX IF NOT EXISTS idx_tech_choices_tech   ON tech_choices(technology);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    message_id   UNINDEXED,
+    conversation_id UNINDEXED,
+    role         UNINDEXED,
+    content,
+    tokenize     = 'unicode61 remove_diacritics 1'
+);
 """
 
 
@@ -151,6 +159,12 @@ class Database:
                 json.dumps([a.model_dump() for a in msg.attachments]),
             ),
         )
+        # Keep FTS index in sync — FTS5 has no INSERT OR REPLACE, so delete then insert.
+        self.conn.execute("DELETE FROM messages_fts WHERE message_id = ?", (msg.id,))
+        self.conn.execute(
+            "INSERT INTO messages_fts(message_id, conversation_id, role, content) VALUES (?,?,?,?)",
+            (msg.id, msg.conversation_id, msg.role.value, msg.content),
+        )
 
     def commit(self):
         self.conn.commit()
@@ -205,6 +219,56 @@ class Database:
             "SELECT * FROM messages WHERE conversation_id = ? ORDER BY position", (conversation_id,)
         ).fetchall()
         return [self._msg_from_row(r) for r in rows]
+
+    def fulltext_search(
+        self,
+        query: str,
+        limit: int = 20,
+        conversation_ids: list[str] | None = None,
+        role: str | None = None,
+    ) -> list[dict]:
+        """BM25 full-text search over message content. Returns dicts with message_id,
+        conversation_id, role, snippet, and rank (lower rank = better match)."""
+        where_parts = ["messages_fts MATCH ?"]
+        params: list = [query]
+        if conversation_ids:
+            placeholders = ",".join("?" * len(conversation_ids))
+            where_parts.append(f"conversation_id IN ({placeholders})")
+            params.extend(conversation_ids)
+        if role:
+            where_parts.append("role = ?")
+            params.append(role)
+        params.append(limit)
+
+        rows = self.conn.execute(
+            f"""SELECT message_id, conversation_id, role,
+                       snippet(messages_fts, 3, '**', '**', '…', 24) AS snippet,
+                       rank
+                FROM messages_fts
+                WHERE {' AND '.join(where_parts)}
+                ORDER BY rank
+                LIMIT ?""",
+            params,
+        ).fetchall()
+        return [
+            {
+                "message_id": r["message_id"],
+                "conversation_id": r["conversation_id"],
+                "role": r["role"],
+                "snippet": r["snippet"],
+                "rank": r["rank"],
+            }
+            for r in rows
+        ]
+
+    def rebuild_fts(self):
+        """Repopulate the FTS index from the messages table. Used by rebuild-index."""
+        self.conn.execute("DELETE FROM messages_fts")
+        rows = self.conn.execute("SELECT id, conversation_id, role, content FROM messages").fetchall()
+        self.conn.executemany(
+            "INSERT INTO messages_fts(message_id, conversation_id, role, content) VALUES (?,?,?,?)",
+            [(r["id"], r["conversation_id"], r["role"], r["content"]) for r in rows],
+        )
 
     def stats(self) -> dict:
         row = self.conn.execute(
