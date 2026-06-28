@@ -30,7 +30,7 @@ The `SourceAdapter` protocol is already in place. Each new adapter adds support 
 | VS Code Copilot Chat | Planned | JSON logs in workspace `.vscode/` |
 | Gemini Advanced | Planned | Google Takeout ZIP |
 
-### 2. Incremental / watch-mode ingest
+### 2. Incremental / watch-mode ingest ✅ Done
 
 Currently `ingest` is a full scan on every run. Adding a `--watch` mode that polls for new export ZIPs (or directly watches a Claude.ai API endpoint) and only indexes new/changed conversations would allow near-real-time sync.
 
@@ -77,7 +77,7 @@ consciousness ui --port 8080
 
 ## Medium-term
 
-### 6. Multi-account merge
+### 6. Multi-account merge ✅ Done
 
 Users with multiple Claude accounts (personal, work) should be able to ingest both into a single store. This requires:
 - `account_id` field on `Conversation` and `Project`
@@ -88,7 +88,7 @@ Users with multiple Claude accounts (personal, work) should be able to ingest bo
 
 Replace pure cosine-similarity ranking with a hybrid of BM25 (keyword) and dense vector scores. BM25 handles exact-match queries better; dense vectors handle semantic queries better. Reciprocal Rank Fusion combines both without needing a learned reranker.
 
-### 8. Conversation summarisation
+### 8. Conversation summarisation ✅ Done
 
 Generate and store a 2–3 sentence summary of each conversation at ingest time (via Claude Haiku). These summaries would:
 - Power `get_recent_context` (no need to load full message text)

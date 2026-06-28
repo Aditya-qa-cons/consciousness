@@ -124,6 +124,11 @@ CREATE TABLE IF NOT EXISTS kg_edges (
 
 CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON kg_edges(src_id);
 CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON kg_edges(dst_id);
+
+CREATE TABLE IF NOT EXISTS config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 
@@ -512,6 +517,15 @@ class Database:
         """All decisions including superseded ones."""
         rows = self.conn.execute("SELECT * FROM decisions ORDER BY extracted_at DESC").fetchall()
         return [self._decision_from_row(r) for r in rows]
+
+    # ── config ────────────────────────────────────────────────────────────────
+
+    def get_config(self, key: str) -> str | None:
+        row = self.conn.execute("SELECT value FROM config WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_config(self, key: str, value: str):
+        self.conn.execute("INSERT OR REPLACE INTO config(key, value) VALUES (?,?)", (key, value))
 
     # ── exclude rules ─────────────────────────────────────────────────────────
 
