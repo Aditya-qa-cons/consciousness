@@ -14,11 +14,21 @@ _ADAPTERS: list[SourceAdapter] = [
 ]
 
 
-def parse_export(path: Path) -> tuple[list[Conversation], list[Project]]:
-    """Auto-detect the right adapter and parse the export file."""
+def parse_export(path: Path, account_id: str | None = None) -> tuple[list[Conversation], list[Project]]:
+    """Auto-detect the right adapter and parse the export file.
+
+    If account_id is provided it overrides any account information extracted from
+    the export itself, and is applied to all returned conversations and projects.
+    """
     for adapter in _ADAPTERS:
         if adapter.can_handle(path):
-            return adapter.parse(path)
+            convs, projs = adapter.parse(path)
+            if account_id is not None:
+                for c in convs:
+                    c.account_id = account_id
+                for p in projs:
+                    p.account_id = account_id
+            return convs, projs
     raise ExportParseError(
         f"No adapter found for: {path} — supported formats: ZIP (Claude.ai or ChatGPT), JSON (Claude.ai)"
     )

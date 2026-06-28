@@ -33,6 +33,7 @@ We linearize by following the last child at each node, which gives the
 final version of each turn.
 """
 
+import hashlib
 import json
 import zipfile
 from datetime import datetime, timezone
@@ -40,6 +41,11 @@ from pathlib import Path
 
 from consciousness.models import Conversation, Message, Project, Role
 from consciousness.parser.base import SourceAdapter
+
+
+def _compute_content_hash(messages: list[Message]) -> str:
+    parts = sorted(f"{m.role.value}:{m.content}" for m in messages)
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 _CHATGPT_SOURCE_PROJECT_ID = "chatgpt-default"
 _CHATGPT_SOURCE_PROJECT_NAME = "ChatGPT"
@@ -175,4 +181,5 @@ def _parse_conversation(raw: dict) -> Conversation | None:
         created_at=created_at or datetime.now(timezone.utc),
         updated_at=updated_at or datetime.now(timezone.utc),
         messages=messages,
+        content_hash=_compute_content_hash(messages),
     )

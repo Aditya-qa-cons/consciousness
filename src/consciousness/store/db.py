@@ -27,15 +27,18 @@ PRAGMA foreign_keys=ON;
 CREATE TABLE IF NOT EXISTS projects (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
-    created_at  TEXT
+    created_at  TEXT,
+    account_id  TEXT
 );
 
 CREATE TABLE IF NOT EXISTS conversations (
-    id          TEXT PRIMARY KEY,
-    title       TEXT NOT NULL,
-    project_id  TEXT REFERENCES projects(id),
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id           TEXT PRIMARY KEY,
+    title        TEXT NOT NULL,
+    project_id   TEXT REFERENCES projects(id),
+    created_at   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL,
+    account_id   TEXT,
+    content_hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS messages (
@@ -83,6 +86,7 @@ CREATE TABLE IF NOT EXISTS exclude_rules (
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv       ON messages(conversation_id, position);
 CREATE INDEX IF NOT EXISTS idx_conversations_proj  ON conversations(project_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_hash  ON conversations(content_hash);
 CREATE INDEX IF NOT EXISTS idx_conversations_upd   ON conversations(updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_decisions_topic     ON decisions(topic);
 CREATE INDEX IF NOT EXISTS idx_decisions_conv      ON decisions(conversation_id);
@@ -144,8 +148,21 @@ class Database:
         self._conn = sqlite3.connect(self.path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(SCHEMA)
+        self._migrate()
         self._conn.commit()
         return self
+
+    def _migrate(self):
+        """Forward-only column additions for existing databases."""
+        for stmt in [
+            "ALTER TABLE conversations ADD COLUMN account_id TEXT",
+            "ALTER TABLE conversations ADD COLUMN content_hash TEXT",
+            "ALTER TABLE projects ADD COLUMN account_id TEXT",
+        ]:
+            try:
+                self._conn.execute(stmt)
+            except Exception:
+                pass  # column already exists
 
     def close(self):
         if self._conn:
@@ -168,15 +185,16 @@ class Database:
 
     def upsert_project(self, project: Project):
         self.conn.execute(
-            "INSERT OR REPLACE INTO projects(id, name, created_at) VALUES (?,?,?)",
-            (project.id, project.name, _ts(project.created_at)),
+            "INSERT OR REPLACE INTO projects(id, name, created_at, account_id) VALUES (?,?,?,?)",
+            (project.id, project.name, _ts(project.created_at), project.account_id),
         )
 
     def upsert_conversation(self, conv: Conversation):
+        cols = "id, title, project_id, created_at, updated_at, account_id, content_hash"
         self.conn.execute(
-            """INSERT OR REPLACE INTO conversations(id, title, project_id, created_at, updated_at)
-               VALUES (?,?,?,?,?)""",
-            (conv.id, conv.title, conv.project_id, _ts(conv.created_at), _ts(conv.updated_at)),
+            f"INSERT OR REPLACE INTO conversations({cols}) VALUES (?,?,?,?,?,?,?)",
+            (conv.id, conv.title, conv.project_id, _ts(conv.created_at), _ts(conv.updated_at),
+             conv.account_id, conv.content_hash),
         )
         for msg in conv.messages:
             self.upsert_message(msg)
@@ -217,9 +235,24 @@ class Database:
                 id=r["id"], name=r["name"],
                 created_at=_from_ts(r["created_at"]),
                 conversation_count=r["conversation_count"],
+                account_id=r["account_id"],
             )
             for r in rows
         ]
+
+    def find_by_content_hash(self, content_hash: str) -> str | None:
+        """Return the conversation_id if a conversation with this hash already exists."""
+        row = self.conn.execute(
+            "SELECT id FROM conversations WHERE content_hash = ?", (content_hash,)
+        ).fetchone()
+        return row["id"] if row else None
+
+    def list_accounts(self) -> list[str]:
+        """Return distinct non-null account IDs across all conversations."""
+        rows = self.conn.execute(
+            "SELECT DISTINCT account_id FROM conversations WHERE account_id IS NOT NULL ORDER BY account_id"
+        ).fetchall()
+        return [r["account_id"] for r in rows]
 
     def list_conversations(self, project_id: str | None = None, limit: int = 50, offset: int = 0) -> list[Conversation]:
         q = "SELECT * FROM conversations"
@@ -317,7 +350,8 @@ class Database:
                 (SELECT COUNT(*) FROM tech_choices)  as tech_choices,
                 (SELECT COUNT(*) FROM summaries)     as summaries,
                 (SELECT COUNT(*) FROM kg_nodes)      as kg_nodes,
-                (SELECT COUNT(*) FROM kg_edges)      as kg_edges
+                (SELECT COUNT(*) FROM kg_edges)      as kg_edges,
+                (SELECT COUNT(DISTINCT account_id) FROM conversations WHERE account_id IS NOT NULL) as accounts
             """
         ).fetchone()
         return dict(row)
@@ -522,6 +556,8 @@ class Database:
             created_at=_from_ts(r["created_at"]),
             updated_at=_from_ts(r["updated_at"]),
             messages=messages,
+            account_id=r["account_id"],
+            content_hash=r["content_hash"],
         )
 
     def _msg_from_row(self, r: sqlite3.Row) -> Message:

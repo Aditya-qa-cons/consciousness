@@ -446,7 +446,8 @@ async def list_projects(db: Database) -> list[TextContent]:
     lines = ["## Your Projects\n"]
     for p in projects:
         date = p.created_at.strftime("%Y-%m-%d") if p.created_at else "unknown"
-        lines.append(f"- **{p.name}** — {p.conversation_count} conversations (created {date})")
+        acct = f" ·  account: {p.account_id}" if p.account_id else ""
+        lines.append(f"- **{p.name}** — {p.conversation_count} conversations (created {date}){acct}")
 
     return [TextContent(type="text", text="\n".join(lines))]
 

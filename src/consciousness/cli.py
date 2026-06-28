@@ -52,10 +52,14 @@ def cli(ctx, data_dir):
     "--build-graph/--no-build-graph", default=False,
     help="Rebuild the knowledge graph after ingest (co-occurrence, supersession, relates-to edges)",
 )
+@click.option(
+    "--account-id", default=None,
+    help="Tag ingested conversations with this account ID (useful when merging exports from multiple accounts)",
+)
 @click.pass_context
 def ingest(  # noqa: PLR0913
     ctx, export_path: Path, skip_extraction: bool, force: bool,
-    llm_extract: bool, summarize: bool, build_graph: bool,
+    llm_extract: bool, summarize: bool, build_graph: bool, account_id: str | None,
 ):
     """Parse an export file and index it into the local store.
 
@@ -84,7 +88,7 @@ def ingest(  # noqa: PLR0913
 
     data_dir: Path = ctx.obj["data_dir"]
     console.print(f"[bold]Parsing export:[/bold] {export_path}")
-    conversations, projects = parse_export(export_path)
+    conversations, projects = parse_export(export_path, account_id=account_id)
     n_c, n_p = len(conversations), len(projects)
     console.print(f"  Found [green]{n_c}[/green] conversations across [green]{n_p}[/green] projects")
 
@@ -126,6 +130,7 @@ def ingest(  # noqa: PLR0913
         new_count = 0
         updated_count = 0
         skipped_count = 0
+        dedup_count = 0
 
         for conv in conversations:
             if db.is_excluded(conv):
@@ -136,6 +141,18 @@ def ingest(  # noqa: PLR0913
                 if task_sum is not None:
                     progress.advance(task_sum)
                 continue
+
+            # Content-hash dedup: skip if an identical conversation already exists under a different ID
+            if conv.content_hash:
+                existing_id = db.find_by_content_hash(conv.content_hash)
+                if existing_id and existing_id != conv.id:
+                    dedup_count += 1
+                    progress.advance(task_db)
+                    progress.advance(task_vec)
+                    progress.advance(task_ext)
+                    if task_sum is not None:
+                        progress.advance(task_sum)
+                    continue
 
             stored_updated_at = db.get_conversation_updated_at(conv.id)
             is_new = stored_updated_at is None
@@ -233,10 +250,15 @@ def ingest(  # noqa: PLR0913
         f"{vectors.count()} vector chunks, "
         f"{s['decisions']} decisions, {s['tech_choices']} tech choices"
     )
+    if dedup_count:
+        console.print(f"  [dim]Deduped:[/dim] {dedup_count} conversations already indexed under another account")
     if excluded_count:
         console.print(f"  [yellow]Excluded:[/yellow] {excluded_count} conversations matched exclude rules")
     if redaction_count:
         console.print(f"  [yellow]Redacted:[/yellow] {redaction_count} sensitive values")
+    if s.get("accounts", 0) > 1:
+        accounts = db.list_accounts()
+        console.print(f"  [bold]Accounts:[/bold] {', '.join(accounts)}")
     console.print(f"Data directory: [dim]{data_dir}[/dim]")
     db.close()
 
