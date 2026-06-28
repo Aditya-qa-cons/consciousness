@@ -837,18 +837,21 @@ def exclude():
 @click.option("--id", "conv_id", default=None, help="Exclude a specific conversation by ID")
 @click.option("--project", "project_id", default=None, help="Exclude all conversations in a project by project ID")
 @click.option("--title", "title_glob", default=None, help="Exclude by title glob pattern (e.g. '*private*')")
+@click.option(
+    "--shared/--no-shared", default=False,
+    help="Mark as a shared (team-wide) rule — bundled with share-export so collaborators can import it",
+)
 @click.pass_context
-def exclude_add(ctx, conv_id, project_id, title_glob):
-    """Add an exclusion rule — matching conversations are skipped during ingest."""
+def exclude_add(ctx, conv_id, project_id, title_glob, shared):
     data_dir: Path = ctx.obj["data_dir"]
     db = Database(data_dir / "conversations.db").connect()
 
     if conv_id:
-        rule = ExcludeRule(pattern=conv_id, rule_type="conversation_id")
+        rule = ExcludeRule(pattern=conv_id, rule_type="conversation_id", shared=shared)
     elif project_id:
-        rule = ExcludeRule(pattern=project_id, rule_type="project_id")
+        rule = ExcludeRule(pattern=project_id, rule_type="project_id", shared=shared)
     elif title_glob:
-        rule = ExcludeRule(pattern=title_glob.lower(), rule_type="title_glob")
+        rule = ExcludeRule(pattern=title_glob.lower(), rule_type="title_glob", shared=shared)
     else:
         console.print("[red]Specify one of --id, --project, or --title[/red]")
         raise SystemExit(1)
@@ -856,7 +859,8 @@ def exclude_add(ctx, conv_id, project_id, title_glob):
     db.add_exclude_rule(rule)
     db.commit()
     db.close()
-    console.print(f"[green]Added exclusion rule:[/green] {rule.rule_type} = {rule.pattern}")
+    shared_label = " [shared]" if shared else ""
+    console.print(f"[green]Added exclusion rule:[/green] {rule.rule_type} = {rule.pattern}{shared_label}")
 
 
 @exclude.command("list")
@@ -875,9 +879,14 @@ def exclude_list(ctx):
     table = Table(title="Exclusion Rules", show_header=True)
     table.add_column("Type")
     table.add_column("Pattern")
+    table.add_column("Shared")
     table.add_column("Created")
     for r in rules:
-        table.add_row(r.rule_type, r.pattern, r.created_at.strftime("%Y-%m-%d") if r.created_at else "?")
+        table.add_row(
+            r.rule_type, r.pattern,
+            "yes" if r.shared else "",
+            r.created_at.strftime("%Y-%m-%d") if r.created_at else "?",
+        )
     console.print(table)
 
 
@@ -892,3 +901,314 @@ def exclude_remove(ctx, pattern: str):
     db.commit()
     db.close()
     console.print(f"[green]Removed exclusion rule:[/green] {pattern}")
+
+
+# ── share-export ──────────────────────────────────────────────────────────────
+
+
+@cli.command("share-export")
+@click.argument("output", type=click.Path(path_type=Path))
+@click.option("--project", "project_id", default=None, help="Export all conversations in this project")
+@click.option("--conversation", "conv_ids", multiple=True, help="Specific conversation ID(s) to export (repeatable)")
+@click.option("--namespace", default=None, help="Your name or team label (embedded in the bundle)")
+@click.option("--encrypt/--no-encrypt", default=False, help="AES-encrypt the bundle (prompts for passphrase)")
+@click.pass_context
+def share_export(ctx, output: Path, project_id: str | None, conv_ids: tuple, namespace: str | None, encrypt: bool):
+    """Export selected conversations as a shareable bundle.
+
+    The bundle contains only the chosen project or conversations, strips sensitive
+    content, and bundles any shared exclude rules so collaborators can adopt them.
+
+    Collaborators import with: consciousness share-import BUNDLE --namespace YOURNAME
+
+    Must specify at least one of --project or --conversation.
+    """
+    from consciousness.extractors.sensitive import redact
+
+    if not project_id and not conv_ids:
+        console.print("[red]Specify at least one of --project or --conversation.[/red]")
+        raise SystemExit(1)
+
+    data_dir: Path = ctx.obj["data_dir"]
+    db_path = data_dir / "conversations.db"
+    if not db_path.exists():
+        console.print("[red]No data found.[/red] Run `consciousness ingest <export.zip>` first.")
+        raise SystemExit(1)
+
+    db = Database(db_path).connect()
+
+    # Collect conversation stubs to export.
+    selected: list = []
+    if project_id:
+        selected.extend(db.list_conversations(project_id=project_id, limit=10_000))
+    for cid in conv_ids:
+        conv = db.get_conversation(cid)
+        if conv is None:
+            console.print(f"[yellow]Warning:[/yellow] conversation {cid!r} not found — skipping")
+        else:
+            selected.append(conv)
+
+    # Deduplicate by id (project + explicit ids may overlap).
+    seen: set = set()
+    unique: list = []
+    for c in selected:
+        if c.id not in seen:
+            seen.add(c.id)
+            unique.append(c)
+
+    if not unique:
+        console.print("[red]No matching conversations found to export.[/red]")
+        db.close()
+        raise SystemExit(1)
+
+    # Apply all exclude rules so private conversations are never exported.
+    excluded_count = 0
+    exportable = []
+    for conv in unique:
+        if db.is_excluded(conv):
+            excluded_count += 1
+        else:
+            exportable.append(conv)
+
+    shared_rules = db.list_shared_exclude_rules()
+
+    # Build the project set covering the exportable conversations.
+    project_ids_needed = {c.project_id for c in exportable if c.project_id}
+    all_projects = {p.id: p for p in db.list_projects()}
+    projects_out = [all_projects[pid] for pid in project_ids_needed if pid in all_projects]
+
+    # Collect full conversation data (with messages and knowledge).
+    bundle_convs = []
+    for stub in exportable:
+        full = db.get_conversation(stub.id)
+        if full is None:
+            continue
+        # Re-apply redaction on message content for safety.
+        messages_out = []
+        for msg in full.messages:
+            clean, _ = redact(msg.content)
+            messages_out.append({
+                "id": msg.id,
+                "role": msg.role.value,
+                "content": clean,
+                "timestamp": msg.timestamp.isoformat() if msg.timestamp else None,
+                "position": msg.position,
+            })
+        decisions_out = [
+            {
+                "id": d.id, "topic": d.topic, "conclusion": d.conclusion,
+                "confidence": d.confidence, "extracted_at": d.extracted_at.isoformat() if d.extracted_at else None,
+                "superseded_by": d.superseded_by,
+            }
+            for d in db.list_decisions_for_conversation(full.id)
+        ]
+        prefs_out = [
+            {"id": p.id, "area": p.area, "preference": p.preference,
+             "extracted_at": p.extracted_at.isoformat() if p.extracted_at else None}
+            for p in db.list_preferences_for_conversation(full.id)
+        ]
+        tcs_out = [
+            {"id": t.id, "technology": t.technology, "verdict": t.verdict,
+             "rationale": t.rationale,
+             "extracted_at": t.extracted_at.isoformat() if t.extracted_at else None}
+            for t in db.list_tech_choices_for_conversation(full.id)
+        ]
+        bundle_convs.append({
+            "id": full.id,
+            "title": full.title,
+            "project_id": full.project_id,
+            "created_at": full.created_at.isoformat() if full.created_at else None,
+            "updated_at": full.updated_at.isoformat() if full.updated_at else None,
+            "messages": messages_out,
+            "decisions": decisions_out,
+            "preferences": prefs_out,
+            "tech_choices": tcs_out,
+        })
+
+    db.close()
+
+    payload = {
+        "version": 1,
+        "format": "consciousness-share",
+        "namespace": namespace or "",
+        "exported_at": datetime.now(timezone.utc).isoformat(),
+        "shared_exclude_rules": [
+            {"pattern": r.pattern, "rule_type": r.rule_type, "created_at": r.created_at.isoformat()}
+            for r in shared_rules
+        ],
+        "projects": [
+            {"id": p.id, "name": p.name, "created_at": p.created_at.isoformat() if p.created_at else None}
+            for p in projects_out
+        ],
+        "conversations": bundle_convs,
+    }
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("share.json", json.dumps(payload, indent=2))
+
+    bundle_bytes = buf.getvalue()
+    if encrypt:
+        bundle_bytes = _encrypt_bundle(bundle_bytes)
+
+    if not output.suffix:
+        output = output.with_suffix(".consciousness")
+    output.write_bytes(bundle_bytes)
+
+    console.print(
+        f"[bold green]Shared bundle exported:[/bold green] {output} "
+        f"({len(bundle_bytes)/1024:.1f} KB{'  [encrypted]' if encrypt else ''})"
+    )
+    console.print(f"  {len(bundle_convs)} conversation(s), {len(projects_out)} project(s)")
+    if excluded_count:
+        console.print(f"  [yellow]Excluded by rules:[/yellow] {excluded_count} conversation(s) not exported")
+    if shared_rules:
+        console.print(f"  [dim]{len(shared_rules)} shared exclude rule(s) bundled[/dim]")
+    console.print(
+        f"\nCollaborators can import with:\n"
+        f"  [bold]consciousness share-import {output} --namespace {namespace or 'YOURNAME'}[/bold]"
+    )
+
+
+# ── share-import ──────────────────────────────────────────────────────────────
+
+
+@cli.command("share-import")
+@click.argument("bundle", type=click.Path(exists=True, path_type=Path))
+@click.option("--namespace", required=True, help="Label for the imported conversations (e.g. collaborator's name)")
+@click.option("--rebuild/--no-rebuild", default=True, help="Rebuild vector index after import (default: yes)")
+@click.option(
+    "--import-excludes/--no-import-excludes", default=False,
+    help="Also import the shared exclude rules bundled in this file",
+)
+@click.pass_context
+def share_import(ctx, bundle: Path, namespace: str, rebuild: bool, import_excludes: bool):
+    """Import a collaborator's shared bundle into a separate namespace.
+
+    Conversations are tagged with NAMESPACE (stored as account_id) so they
+    stay isolated from your own history. Search results show the source label.
+
+    Re-importing the same bundle is idempotent — existing namespace conversations
+    are replaced in-place.
+
+    Use --import-excludes to also adopt the shared exclude rules from the bundle.
+    """
+    data_dir: Path = ctx.obj["data_dir"]
+
+    bundle_bytes = bundle.read_bytes()
+    if bundle_bytes.startswith(b"CONSCIOUSNESS_ENC_V1\n"):
+        bundle_bytes = _decrypt_bundle(bundle_bytes)
+
+    with zipfile.ZipFile(io.BytesIO(bundle_bytes)) as zf:
+        names = zf.namelist()
+        if "share.json" not in names:
+            console.print("[red]Invalid share bundle:[/red] share.json not found. "
+                          "Use import-bundle for full database bundles.")
+            raise SystemExit(1)
+        payload = json.loads(zf.read("share.json"))
+
+    if payload.get("format") != "consciousness-share":
+        console.print("[red]Unrecognised bundle format.[/red]")
+        raise SystemExit(1)
+
+    db = Database(data_dir / "conversations.db").connect()
+
+    # Upsert projects — prefix IDs with namespace to avoid collisions.
+    def ns(orig_id: str) -> str:
+        return f"{namespace}/{orig_id}"
+
+    for p in payload.get("projects", []):
+        from consciousness.models import Project
+        db.upsert_project(Project(
+            id=ns(p["id"]),
+            name=p["name"],
+            created_at=datetime.fromisoformat(p["created_at"]) if p.get("created_at") else None,
+            account_id=namespace,
+        ))
+
+    from consciousness.models import Conversation, Decision, Message, Preference, Role, TechChoice
+
+    imported = 0
+    for c in payload.get("conversations", []):
+        conv_id = ns(c["id"])
+        proj_id = ns(c["project_id"]) if c.get("project_id") else None
+        messages = [
+            Message(
+                id=ns(m["id"]),
+                conversation_id=conv_id,
+                role=Role(m["role"]),
+                content=m["content"],
+                timestamp=datetime.fromisoformat(m["timestamp"]) if m.get("timestamp") else datetime.now(timezone.utc),
+                position=m["position"],
+            )
+            for m in c.get("messages", [])
+        ]
+        conv = Conversation(
+            id=conv_id,
+            title=c["title"],
+            project_id=proj_id,
+            created_at=datetime.fromisoformat(c["created_at"]) if c.get("created_at") else datetime.now(timezone.utc),
+            updated_at=datetime.fromisoformat(c["updated_at"]) if c.get("updated_at") else datetime.now(timezone.utc),
+            messages=messages,
+            account_id=namespace,
+        )
+        db.upsert_conversation(conv)
+
+        db.delete_knowledge_for_conversation(conv_id)
+        _now = datetime.now(timezone.utc)
+        for d in c.get("decisions", []):
+            db.upsert_decision(Decision(
+                id=ns(d["id"]), topic=d["topic"], conclusion=d["conclusion"],
+                confidence=d.get("confidence", 0.75), conversation_id=conv_id,
+                extracted_at=datetime.fromisoformat(d["extracted_at"]) if d.get("extracted_at") else _now,
+            ))
+        for p2 in c.get("preferences", []):
+            db.upsert_preference(Preference(
+                id=ns(p2["id"]), area=p2["area"], preference=p2["preference"],
+                conversation_id=conv_id,
+                extracted_at=datetime.fromisoformat(p2["extracted_at"]) if p2.get("extracted_at") else _now,
+            ))
+        for t in c.get("tech_choices", []):
+            db.upsert_tech_choice(TechChoice(
+                id=ns(t["id"]), technology=t["technology"], verdict=t["verdict"],
+                rationale=t.get("rationale"), conversation_id=conv_id,
+                extracted_at=datetime.fromisoformat(t["extracted_at"]) if t.get("extracted_at") else _now,
+            ))
+        imported += 1
+
+    if import_excludes:
+        _now = datetime.now(timezone.utc)
+        for rule_data in payload.get("shared_exclude_rules", []):
+            db.add_exclude_rule(ExcludeRule(
+                pattern=rule_data["pattern"],
+                rule_type=rule_data["rule_type"],
+                created_at=datetime.fromisoformat(rule_data["created_at"]) if rule_data.get("created_at") else _now,
+                shared=True,
+            ))
+
+    db.commit()
+    db.close()
+
+    bundle_ns = payload.get("namespace", "")
+    source_label = f" from '{bundle_ns}'" if bundle_ns else ""
+    console.print(
+        f"[bold green]Imported[/bold green]{source_label} → namespace [bold]{namespace}[/bold]: "
+        f"{imported} conversation(s)"
+    )
+    if import_excludes and payload.get("shared_exclude_rules"):
+        console.print(f"  [dim]Imported {len(payload['shared_exclude_rules'])} shared exclude rule(s)[/dim]")
+
+    if rebuild:
+        from consciousness.store.vectors import VectorStore
+        vectors = VectorStore(data_dir / "vectors").connect()
+        db2 = Database(data_dir / "conversations.db").connect()
+        with console.status(f"Building vector index for {imported} conversations…"):
+            for c in payload.get("conversations", []):
+                full = db2.get_conversation(ns(c["id"]))
+                if full:
+                    vectors.index_conversation(full)
+        console.print("  Full-text search index updated…")
+        db2.rebuild_fts()
+        db2.commit()
+        db2.close()
+        console.print(f"  [dim]{vectors.count()} total vector chunks[/dim]")

@@ -123,7 +123,7 @@ A background daemon that:
 - Surfaces "memory conflicts" (contradictory decisions on the same topic)
 - Generates a weekly digest of what changed in your knowledge base
 
-### 12. Sharing / collaboration
+### 12. Sharing / collaboration ✅ Done
 
 Selective sharing of conversations or project contexts:
 - Export a project as a shareable bundle (stripped of sensitive data)
