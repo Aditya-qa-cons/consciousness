@@ -25,6 +25,9 @@
       {% if c.project_id and c.project_id in project_map %}
        · {{ project_map[c.project_id] }}
       {% endif %}
+      {% if c.account_id %}
+       · <span style="font-size:.8em;padding:1px 6px;border-radius:8px;background:#e8f0fe;color:#1a56db">{{ c.account_id[:8] }}</span>
+      {% endif %}
     </div>
   </div>
   {% endfor %}

@@ -36,6 +36,8 @@ class Conversation(BaseModel):
     created_at: datetime
     updated_at: datetime
     messages: list[Message] = Field(default_factory=list)
+    account_id: str | None = None
+    content_hash: str | None = None
 
     @property
     def message_count(self) -> int:
@@ -62,6 +64,7 @@ class Project(BaseModel):
     name: str
     created_at: datetime | None = None
     conversation_count: int = 0
+    account_id: str | None = None
 
 
 # ── extracted knowledge ────────────────────────────────────────────────────────

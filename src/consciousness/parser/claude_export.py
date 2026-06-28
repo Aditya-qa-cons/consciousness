@@ -25,6 +25,7 @@ Conversation JSON shape (as observed from exports):
 }
 """
 
+import hashlib
 import json
 import zipfile
 from datetime import datetime
@@ -33,6 +34,11 @@ from pathlib import Path
 from dateutil import parser as dateparser
 
 from consciousness.models import Attachment, Conversation, Message, Project, Role
+
+
+def _compute_content_hash(messages: list[Message]) -> str:
+    parts = sorted(f"{m.role.value}:{m.content}" for m in messages)
+    return hashlib.sha256("\n".join(parts).encode()).hexdigest()
 
 
 class ExportParseError(Exception):
@@ -81,6 +87,8 @@ def _parse_conversation(raw: dict) -> Conversation:
     conv_id = raw["uuid"]
     project_raw = raw.get("project")
     messages = [_parse_message(m, conv_id, i) for i, m in enumerate(raw.get("chat_messages", []))]
+    account_raw = raw.get("account")
+    account_id = account_raw.get("uuid") if account_raw else None
     return Conversation(
         id=conv_id,
         title=raw.get("name") or "Untitled",
@@ -89,6 +97,8 @@ def _parse_conversation(raw: dict) -> Conversation:
         created_at=_parse_timestamp(raw.get("created_at")),
         updated_at=_parse_timestamp(raw.get("updated_at")),
         messages=messages,
+        account_id=account_id,
+        content_hash=_compute_content_hash(messages),
     )
 
 

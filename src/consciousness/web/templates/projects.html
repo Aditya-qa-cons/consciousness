@@ -16,7 +16,12 @@
   {% for p in projects %}
   <div class="card">
     <a href="/conversations?project_id={{ p.id }}"><strong>{{ p.name }}</strong></a>
-    <div class="meta">{{ p.conversation_count }} conversation{% if p.conversation_count != 1 %}s{% endif %}</div>
+    <div class="meta">
+      {{ p.conversation_count }} conversation{% if p.conversation_count != 1 %}s{% endif %}
+      {% if p.account_id %}
+       · <span style="font-size:.8em;padding:1px 6px;border-radius:8px;background:#e8f0fe;color:#1a56db">{{ p.account_id[:8] }}</span>
+      {% endif %}
+    </div>
   </div>
   {% endfor %}
 {% else %}
