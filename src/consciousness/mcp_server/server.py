@@ -219,6 +219,31 @@ async def list_tools() -> list[Tool]:
                 },
             },
         ),
+        Tool(
+            name="explore_knowledge_graph",
+            description=(
+                "Explore the knowledge graph built from your extracted decisions and tech choices. "
+                "Queries: 'co_occurring_technologies' — which technologies appear together most often; "
+                "'revisited_topics' — decision topics reconsidered multiple times; "
+                "'technology_context' — everything known about a specific technology."
+            ),
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "enum": ["co_occurring_technologies", "revisited_topics", "technology_context"],
+                        "description": "What to explore",
+                    },
+                    "technology": {
+                        "type": "string",
+                        "description": "Technology name — required for technology_context",
+                    },
+                    "limit": {"type": "integer", "default": 10, "description": "Max results"},
+                },
+                "required": ["query"],
+            },
+        ),
     ]
 
 
@@ -243,6 +268,8 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return await list_projects(db)
         case "synthesize_memory":
             return await synthesize_memory(db, arguments)
+        case "explore_knowledge_graph":
+            return await explore_knowledge_graph(db, arguments)
         case _:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
@@ -451,6 +478,80 @@ async def synthesize_memory(db: Database, args: dict) -> list[TextContent]:
         "```",
     ]
     return [TextContent(type="text", text="\n".join(output))]
+
+
+async def explore_knowledge_graph(db: Database, args: dict) -> list[TextContent]:
+    query = args.get("query", "")
+    limit = int(args.get("limit", 10))
+
+    if query == "co_occurring_technologies":
+        pairs = db.co_occurring_technologies(limit=limit)
+        if not pairs:
+            return [TextContent(type="text", text=(
+                "No co-occurrence data found. "
+                "Run `consciousness ingest --build-graph` or `consciousness rebuild-graph` first."
+            ))]
+        lines = ["## Technologies That Appear Together\n"]
+        for t1, t2, weight in pairs:
+            n = int(weight)
+            lines.append(f"- **{t1}** + **{t2}** — {n} conversation{'s' if n != 1 else ''}")
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    if query == "revisited_topics":
+        topics = db.revisited_topics(limit=limit)
+        if not topics:
+            return [TextContent(type="text", text="No revisited decision topics found.")]
+        lines = ["## Decision Topics Revisited Multiple Times\n"]
+        for topic, count in topics:
+            lines.append(f"- **{topic}** — {count} decisions recorded")
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    if query == "technology_context":
+        tech = args.get("technology", "").strip()
+        if not tech:
+            return [TextContent(type="text", text="Provide a `technology` name for this query.")]
+
+        node_id = f"tech:{tech.lower()}"
+        node = db.get_kg_node(node_id)
+        if not node:
+            return [TextContent(type="text", text=(
+                f"No graph node found for '{tech}'. "
+                "Run `consciousness rebuild-graph` first, or check the technology name."
+            ))]
+
+        neighbors = db.get_kg_neighbors(node_id)
+        lines = [f"## Knowledge Graph: {node.label}\n"]
+
+        co_occurs = [(e, n) for e, n in neighbors if e.relation == "co_occurs_with"]
+        relates = [(e, n) for e, n in neighbors if e.relation == "relates_to"]
+
+        if co_occurs:
+            lines.append("### Co-occurs with")
+            for e, n in sorted(co_occurs, key=lambda x: -x[0].weight)[:limit]:
+                cnt = int(e.weight)
+                lines.append(f"- **{n.label}** ({cnt} conversation{'s' if cnt != 1 else ''})")
+            lines.append("")
+
+        if relates:
+            lines.append("### Related decision topics")
+            for _, n in relates[:limit]:
+                lines.append(f"- {n.label}")
+            lines.append("")
+
+        tcs = [tc for tc in db.list_tech_choices() if tc.technology.lower() == tech.lower()]
+        if tcs:
+            lines.append("### Verdicts")
+            for tc in tcs[:5]:
+                lines.append(f"- **{tc.verdict}**")
+                if tc.rationale:
+                    lines.append(f"  _{tc.rationale[:200]}_")
+
+        return [TextContent(type="text", text="\n".join(lines))]
+
+    return [TextContent(type="text", text=(
+        f"Unknown query '{query}'. "
+        "Use co_occurring_technologies, revisited_topics, or technology_context."
+    ))]
 
 
 # ── server entrypoint ────────────────────────────────────────────────────────
