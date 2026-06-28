@@ -25,7 +25,7 @@ The `SourceAdapter` protocol is already in place. Each new adapter adds support 
 |---|---|---|
 | Claude.ai ZIP export | ✅ Done | Primary adapter |
 | Claude.ai API (live sync) | Planned | Poll `/api/conversations` on a cron; needs API auth |
-| ChatGPT export | Planned | `conversations.json` inside ZIP; different schema |
+| ChatGPT export | ✅ Done | `conversations.json` inside ZIP; different schema |
 | Cursor AI | Planned | SQLite database at `~/.cursor/db/` |
 | VS Code Copilot Chat | Planned | JSON logs in workspace `.vscode/` |
 | Gemini Advanced | Planned | Google Takeout ZIP |
@@ -40,7 +40,7 @@ Design sketch:
 - Run the normal ingest pipeline on the delta
 - Update `last_ingested_at` on success
 
-### 3. Better decision extraction
+### 3. Better decision extraction ✅ Done
 
 The current regex approach has ~60% recall on real conversations. Two improvements:
 
@@ -48,7 +48,7 @@ The current regex approach has ~60% recall on real conversations. Two improvemen
 
 **Confidence calibration:** tune the per-pattern confidence values based on a labeled test set of real conversations.
 
-### 4. Full-text search alongside vector search
+### 4. Full-text search alongside vector search ✅ Done
 
 ChromaDB provides only vector (semantic) similarity. For exact queries ("find the conversation where I mentioned 'pgBouncer'"), a SQLite FTS5 index over `messages.content` would give instant, precise results.
 
@@ -57,7 +57,7 @@ Architecture:
 - Add `db.fulltext_search(query)` returning message IDs
 - `VectorStore.search()` and `db.fulltext_search()` results merged with RRF (Reciprocal Rank Fusion) in the MCP `search_history` tool
 
-### 5. Web UI (read-only)
+### 5. Web UI (read-only) ✅ Done
 
 A lightweight local web interface for browsing history without opening Claude. Stack: FastAPI + HTMX or a simple Jinja2 template server. No JS build step, no external CDN dependencies.
 
@@ -84,7 +84,7 @@ Users with multiple Claude accounts (personal, work) should be able to ingest bo
 - Deduplication by content hash (same conversation exported from two accounts)
 - Source labels in search results
 
-### 7. Hybrid search (BM25 + vector)
+### 7. Hybrid search (BM25 + vector) ✅ Done
 
 Replace pure cosine-similarity ranking with a hybrid of BM25 (keyword) and dense vector scores. BM25 handles exact-match queries better; dense vectors handle semantic queries better. Reciprocal Rank Fusion combines both without needing a learned reranker.
 
@@ -116,7 +116,7 @@ The MCP server currently runs tools consumable by any MCP client. Extending the 
 - **LangChain tool:** expose as a `BaseTool` for LangChain agents
 - **REST API:** simple HTTP endpoints for any client that can make HTTP calls
 
-### 11. Automatic memory maintenance
+### 11. Automatic memory maintenance ✅ Done
 
 A background daemon that:
 - Detects stale decisions (older than N months, no recent reinforcement) and marks them for review

@@ -518,6 +518,69 @@ class Database:
         rows = self.conn.execute("SELECT * FROM decisions ORDER BY extracted_at DESC").fetchall()
         return [self._decision_from_row(r) for r in rows]
 
+    # ── maintenance queries ────────────────────────────────────────────────────
+
+    def list_stale_decisions(self, older_than_days: int = 90) -> list[Decision]:
+        """Return active decisions extracted more than older_than_days ago."""
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=older_than_days)).isoformat()
+        rows = self.conn.execute(
+            "SELECT * FROM decisions WHERE superseded_by IS NULL AND extracted_at < ? ORDER BY extracted_at ASC",
+            (cutoff,),
+        ).fetchall()
+        return [self._decision_from_row(r) for r in rows]
+
+    def find_conflicting_decisions(self) -> list[tuple[Decision, Decision]]:
+        """Return pairs of active decisions that share the same topic (case-insensitive).
+
+        Pairs with the same topic and different conclusions may represent
+        unresolved conflicts that should be reviewed.
+        """
+        rows = self.conn.execute(
+            """SELECT d1.id AS id1, d2.id AS id2
+               FROM decisions d1
+               JOIN decisions d2 ON lower(d1.topic) = lower(d2.topic) AND d1.id < d2.id
+               WHERE d1.superseded_by IS NULL AND d2.superseded_by IS NULL"""
+        ).fetchall()
+        pairs = []
+        for r in rows:
+            d1 = self._decision_from_row(
+                self.conn.execute("SELECT * FROM decisions WHERE id = ?", (r["id1"],)).fetchone()
+            )
+            d2 = self._decision_from_row(
+                self.conn.execute("SELECT * FROM decisions WHERE id = ?", (r["id2"],)).fetchone()
+            )
+            pairs.append((d1, d2))
+        return pairs
+
+    def recent_changes(self, days: int = 7) -> dict:
+        """Return a summary of activity in the last `days` days.
+
+        Keys: conversations (list of dicts), decisions (list), tech_choices (list).
+        """
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+
+        conv_rows = self.conn.execute(
+            "SELECT id, title, updated_at FROM conversations WHERE updated_at >= ? ORDER BY updated_at DESC",
+            (cutoff,),
+        ).fetchall()
+        conversations = [{"id": r["id"], "title": r["title"], "updated_at": r["updated_at"]} for r in conv_rows]
+
+        dec_rows = self.conn.execute(
+            "SELECT * FROM decisions WHERE extracted_at >= ? ORDER BY extracted_at DESC",
+            (cutoff,),
+        ).fetchall()
+        decisions = [self._decision_from_row(r) for r in dec_rows]
+
+        tc_rows = self.conn.execute(
+            "SELECT * FROM tech_choices WHERE extracted_at >= ? ORDER BY extracted_at DESC",
+            (cutoff,),
+        ).fetchall()
+        tech_choices = [self._tech_from_row(r) for r in tc_rows]
+
+        return {"conversations": conversations, "decisions": decisions, "tech_choices": tech_choices}
+
     # ── config ────────────────────────────────────────────────────────────────
 
     def get_config(self, key: str) -> str | None:

@@ -580,6 +580,138 @@ def rebuild_graph(ctx):
     console.print(f"[bold green]Done.[/bold green] {nodes} nodes, {edges} edges")
 
 
+# ── maintenance ───────────────────────────────────────────────────────────────
+
+
+@cli.command("maintenance")
+@click.option(
+    "--stale-days", default=90, show_default=True, type=int,
+    help="Flag active decisions not updated in this many days",
+)
+@click.option(
+    "--digest-days", default=7, show_default=True, type=int,
+    help="Lookback window for the recent-activity digest",
+)
+@click.option("--json", "as_json", is_flag=True, default=False, help="Output as JSON")
+@click.pass_context
+def maintenance(ctx, stale_days: int, digest_days: int, as_json: bool):
+    """Detect stale decisions, surface memory conflicts, and show a recent-changes digest.
+
+    Stale decisions are active (non-superseded) decisions that have not been
+    updated in more than --stale-days days. Memory conflicts are pairs of active
+    decisions that share the same topic — they may represent unresolved tension
+    that should be reviewed.
+
+    Use --json to pipe results to other tools or save a report file.
+    """
+    data_dir: Path = ctx.obj["data_dir"]
+    db_path = data_dir / "conversations.db"
+    if not db_path.exists():
+        console.print("[red]No data found.[/red] Run `consciousness ingest <export.zip>` first.")
+        raise SystemExit(1)
+
+    db = Database(db_path).connect()
+
+    stale = db.list_stale_decisions(older_than_days=stale_days)
+    conflicts = db.find_conflicting_decisions()
+    digest = db.recent_changes(days=digest_days)
+    db.close()
+
+    if as_json:
+        import json as _json
+
+        out = {
+            "stale_decisions": [
+                {
+                    "id": d.id, "topic": d.topic, "conclusion": d.conclusion,
+                    "confidence": d.confidence, "extracted_at": d.extracted_at.isoformat() if d.extracted_at else None,
+                    "conversation_id": d.conversation_id,
+                }
+                for d in stale
+            ],
+            "conflicting_pairs": [
+                {
+                    "decision_a": {"id": a.id, "topic": a.topic, "conclusion": a.conclusion},
+                    "decision_b": {"id": b.id, "topic": b.topic, "conclusion": b.conclusion},
+                }
+                for a, b in conflicts
+            ],
+            "recent_changes": {
+                "days": digest_days,
+                "conversations": digest["conversations"],
+                "decisions": [
+                    {"id": d.id, "topic": d.topic, "conclusion": d.conclusion}
+                    for d in digest["decisions"]
+                ],
+                "tech_choices": [
+                    {"id": t.id, "technology": t.technology, "verdict": t.verdict}
+                    for t in digest["tech_choices"]
+                ],
+            },
+        }
+        console.print(_json.dumps(out, indent=2))
+        return
+
+    # ── recent activity digest ─────────────────────────────────────────────────
+    console.print(f"\n[bold]Recent Activity[/bold] (last {digest_days} days)")
+    if not digest["conversations"] and not digest["decisions"] and not digest["tech_choices"]:
+        console.print("  [dim]No activity in this period.[/dim]")
+    else:
+        if digest["conversations"]:
+            console.print(f"  [green]{len(digest['conversations'])}[/green] conversation(s) updated")
+            for c in digest["conversations"][:5]:
+                console.print(f"    · {c['title']}")
+            if len(digest["conversations"]) > 5:
+                console.print(f"    … and {len(digest['conversations']) - 5} more")
+        if digest["decisions"]:
+            console.print(f"  [green]{len(digest['decisions'])}[/green] new decision(s) extracted")
+            for d in digest["decisions"][:5]:
+                console.print(f"    · [bold]{d.topic}[/bold]: {d.conclusion[:80]}")
+            if len(digest["decisions"]) > 5:
+                console.print(f"    … and {len(digest['decisions']) - 5} more")
+        if digest["tech_choices"]:
+            console.print(f"  [green]{len(digest['tech_choices'])}[/green] new tech choice(s) recorded")
+            for t in digest["tech_choices"][:5]:
+                console.print(f"    · [bold]{t.technology}[/bold] → {t.verdict}")
+
+    # ── stale decisions ────────────────────────────────────────────────────────
+    console.print(f"\n[bold]Stale Decisions[/bold] (not updated in >{stale_days} days)")
+    if not stale:
+        console.print("  [green]None.[/green] All active decisions are recent.")
+    else:
+        console.print(f"  [yellow]{len(stale)} decision(s) may be outdated:[/yellow]")
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 1))
+        table.add_column("Topic")
+        table.add_column("Conclusion", max_width=60)
+        table.add_column("Age", justify="right")
+        for d in stale:
+            if d.extracted_at:
+                age_days = (datetime.now(timezone.utc) - d.extracted_at).days
+                age = f"{age_days}d"
+            else:
+                age = "?"
+            table.add_row(d.topic, d.conclusion[:60], age)
+        console.print(table)
+
+    # ── memory conflicts ───────────────────────────────────────────────────────
+    console.print("\n[bold]Potential Memory Conflicts[/bold]")
+    if not conflicts:
+        console.print("  [green]None.[/green] No duplicate-topic active decisions found.")
+    else:
+        console.print(
+            f"  [yellow]{len(conflicts)} topic(s) with multiple active decisions[/yellow] "
+            "(may or may not be genuine conflicts — review manually):"
+        )
+        for a, b in conflicts[:10]:
+            console.print(f"\n  Topic: [bold]{a.topic}[/bold]")
+            console.print(f"    A: {a.conclusion[:80]}")
+            console.print(f"    B: {b.conclusion[:80]}")
+        if len(conflicts) > 10:
+            console.print(f"\n  … and {len(conflicts) - 10} more pairs")
+
+    console.print()
+
+
 # ── mcp-config ────────────────────────────────────────────────────────────────
 
 
