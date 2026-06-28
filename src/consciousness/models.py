@@ -118,6 +118,7 @@ class ExcludeRule(BaseModel):
     pattern: str
     rule_type: str  # 'conversation_id' | 'project_id' | 'title_glob'
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    shared: bool = False  # shared rules are bundled with share-export for team-wide policies
 
 
 # ── knowledge graph ────────────────────────────────────────────────────────────

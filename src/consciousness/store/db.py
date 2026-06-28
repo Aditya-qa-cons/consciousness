@@ -81,7 +81,8 @@ CREATE TABLE IF NOT EXISTS tech_choices (
 CREATE TABLE IF NOT EXISTS exclude_rules (
     pattern     TEXT PRIMARY KEY,
     rule_type   TEXT NOT NULL,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    shared      INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_messages_conv       ON messages(conversation_id, position);
@@ -163,6 +164,7 @@ class Database:
             "ALTER TABLE conversations ADD COLUMN account_id TEXT",
             "ALTER TABLE conversations ADD COLUMN content_hash TEXT",
             "ALTER TABLE projects ADD COLUMN account_id TEXT",
+            "ALTER TABLE exclude_rules ADD COLUMN shared INTEGER NOT NULL DEFAULT 0",
         ]:
             try:
                 self._conn.execute(stmt)
@@ -386,6 +388,28 @@ class Database:
         ).fetchall()
         return [self._decision_from_row(r) for r in rows]
 
+    def list_decisions_for_conversation(self, conversation_id: str) -> list[Decision]:
+        """Return all decisions (including superseded) linked to a specific conversation."""
+        rows = self.conn.execute(
+            "SELECT * FROM decisions WHERE conversation_id = ? ORDER BY extracted_at DESC",
+            (conversation_id,),
+        ).fetchall()
+        return [self._decision_from_row(r) for r in rows]
+
+    def list_preferences_for_conversation(self, conversation_id: str) -> list[Preference]:
+        rows = self.conn.execute(
+            "SELECT * FROM preferences WHERE conversation_id = ? ORDER BY extracted_at DESC",
+            (conversation_id,),
+        ).fetchall()
+        return [self._pref_from_row(r) for r in rows]
+
+    def list_tech_choices_for_conversation(self, conversation_id: str) -> list[TechChoice]:
+        rows = self.conn.execute(
+            "SELECT * FROM tech_choices WHERE conversation_id = ? ORDER BY extracted_at DESC",
+            (conversation_id,),
+        ).fetchall()
+        return [self._tech_from_row(r) for r in rows]
+
     def supersede_decision(self, old_id: str, new_id: str):
         self.conn.execute("UPDATE decisions SET superseded_by = ? WHERE id = ?", (new_id, old_id))
 
@@ -594,8 +618,8 @@ class Database:
 
     def add_exclude_rule(self, rule: ExcludeRule):
         self.conn.execute(
-            "INSERT OR REPLACE INTO exclude_rules(pattern, rule_type, created_at) VALUES (?,?,?)",
-            (rule.pattern, rule.rule_type, _ts(rule.created_at)),
+            "INSERT OR REPLACE INTO exclude_rules(pattern, rule_type, created_at, shared) VALUES (?,?,?,?)",
+            (rule.pattern, rule.rule_type, _ts(rule.created_at), int(rule.shared)),
         )
 
     def remove_exclude_rule(self, pattern: str):
@@ -604,7 +628,25 @@ class Database:
     def list_exclude_rules(self) -> list[ExcludeRule]:
         rows = self.conn.execute("SELECT * FROM exclude_rules ORDER BY created_at").fetchall()
         return [
-            ExcludeRule(pattern=r["pattern"], rule_type=r["rule_type"], created_at=_from_ts(r["created_at"]))
+            ExcludeRule(
+                pattern=r["pattern"], rule_type=r["rule_type"],
+                created_at=_from_ts(r["created_at"]),
+                shared=bool(r["shared"]),
+            )
+            for r in rows
+        ]
+
+    def list_shared_exclude_rules(self) -> list[ExcludeRule]:
+        """Return only rules marked as shared (for bundling with share-export)."""
+        rows = self.conn.execute(
+            "SELECT * FROM exclude_rules WHERE shared = 1 ORDER BY created_at"
+        ).fetchall()
+        return [
+            ExcludeRule(
+                pattern=r["pattern"], rule_type=r["rule_type"],
+                created_at=_from_ts(r["created_at"]),
+                shared=True,
+            )
             for r in rows
         ]
 
