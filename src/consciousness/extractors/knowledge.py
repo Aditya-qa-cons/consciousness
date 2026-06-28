@@ -12,6 +12,7 @@ from a later conversation, the earlier one is marked superseded_by.
 import re
 import uuid
 
+from consciousness.extractors.base import ExtractorResult
 from consciousness.models import Conversation, Decision, Preference, TechChoice
 
 # ── decision patterns (match assistant messages) ───────────────────────────────
@@ -188,3 +189,23 @@ def apply_temporal_tracking(new_decisions: list[Decision], existing_decisions: l
             if new_topic in old_topic or old_topic in new_topic:
                 supersessions.append((old.id, new.id))
     return supersessions
+
+
+# ── built-in plugin class ──────────────────────────────────────────────────────
+
+
+class RegexExtractor:
+    """Built-in regex-based extractor, registered as the 'regex' entry point.
+
+    Wraps the module-level extract_* functions so the plugin registry can
+    discover and invoke them uniformly alongside any third-party plugins.
+    """
+
+    name = "regex"
+
+    def extract(self, conv: Conversation) -> ExtractorResult:
+        return ExtractorResult(
+            decisions=extract_decisions(conv),
+            preferences=extract_preferences(conv),
+            tech_choices=extract_tech_choices(conv),
+        )
