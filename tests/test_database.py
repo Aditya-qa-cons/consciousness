@@ -369,3 +369,31 @@ def test_rebuild_fts_repopulates_from_messages(db):
     db.rebuild_fts()
     db.commit()
     assert len(db.fulltext_search("Hello")) > 0
+
+
+# ── config ─────────────────────────────────────────────────────────────────────
+
+
+def test_get_config_returns_none_for_missing_key(db):
+    assert db.get_config("nonexistent") is None
+
+
+def test_set_and_get_config_roundtrip(db):
+    db.set_config("last_ingested_at", "2024-06-01T10:00:00+00:00")
+    db.commit()
+    assert db.get_config("last_ingested_at") == "2024-06-01T10:00:00+00:00"
+
+
+def test_set_config_overwrites_existing_value(db):
+    db.set_config("key", "old")
+    db.set_config("key", "new")
+    db.commit()
+    assert db.get_config("key") == "new"
+
+
+def test_set_config_multiple_keys_are_independent(db):
+    db.set_config("a", "alpha")
+    db.set_config("b", "beta")
+    db.commit()
+    assert db.get_config("a") == "alpha"
+    assert db.get_config("b") == "beta"

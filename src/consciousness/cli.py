@@ -3,7 +3,9 @@
 import asyncio
 import io
 import json
+import time
 import zipfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -56,24 +58,37 @@ def cli(ctx, data_dir):
     "--account-id", default=None,
     help="Tag ingested conversations with this account ID (useful when merging exports from multiple accounts)",
 )
+@click.option(
+    "--watch/--no-watch", default=False,
+    help="Watch for new exports and re-ingest automatically (Ctrl+C to stop)",
+)
+@click.option(
+    "--interval", default=300, show_default=True, type=int,
+    help="Seconds between scans in watch mode",
+)
 @click.pass_context
 def ingest(  # noqa: PLR0913
     ctx, export_path: Path, skip_extraction: bool, force: bool,
     llm_extract: bool, summarize: bool, build_graph: bool, account_id: str | None,
+    watch: bool, interval: int,
 ):
-    """Parse an export file and index it into the local store.
+    """Parse an export file or directory and index it into the local store.
 
     Supports Claude.ai exports (ZIP or JSON) and ChatGPT exports (ZIP).
+    Pass a directory to ingest all ZIP files inside it.
     By default, conversations that haven't changed since the last ingest are
     skipped. Use --force to re-index everything unconditionally.
+
+    Use --watch to run continuously, re-scanning every --interval seconds.
+    In watch mode a directory path will only process ZIPs added or modified
+    since the previous scan.
 
     Use --llm-extract to run Claude Haiku over each conversation for higher-
     quality knowledge extraction (requires ANTHROPIC_API_KEY).
     Use --summarize to store a 2-3 sentence summary for each conversation.
-    Use --build-graph to rebuild the knowledge graph of co-occurring technologies
-    and decision topics after ingest.
+    Use --build-graph to rebuild the knowledge graph after ingest.
 
-    EXPORT_PATH: path to the exported .zip or conversations.json file.
+    EXPORT_PATH: path to the exported .zip / conversations.json, or a directory.
     """
     from consciousness.extractors.knowledge import (
         apply_temporal_tracking,
@@ -87,16 +102,6 @@ def ingest(  # noqa: PLR0913
     from consciousness.models import ConversationSummary
 
     data_dir: Path = ctx.obj["data_dir"]
-    console.print(f"[bold]Parsing export:[/bold] {export_path}")
-    conversations, projects = parse_export(export_path, account_id=account_id)
-    n_c, n_p = len(conversations), len(projects)
-    console.print(f"  Found [green]{n_c}[/green] conversations across [green]{n_p}[/green] projects")
-
-    db = Database(data_dir / "conversations.db").connect()
-    vectors = VectorStore(data_dir / "vectors").connect()
-
-    for project in projects:
-        db.upsert_project(project)
 
     llm_extractor = None
     if llm_extract and not skip_extraction:
@@ -113,40 +118,76 @@ def ingest(  # noqa: PLR0913
         if not summarizer.is_available():
             console.print("[dim]Note:[/dim] No ANTHROPIC_API_KEY — summaries will use text extraction fallback")
 
-    with Progress(
-        SpinnerColumn(),
-        TextColumn("[progress.description]{task.description}"),
-        BarColumn(),
-        TaskProgressColumn(),
-        console=console,
-    ) as progress:
-        task_db = progress.add_task("Writing to database…", total=len(conversations))
-        task_vec = progress.add_task("Building vector index…", total=len(conversations))
-        task_ext = progress.add_task("Extracting knowledge…", total=len(conversations))
-        task_sum = progress.add_task("Generating summaries…", total=len(conversations)) if summarize else None
+    scan = 0
+    while True:
+        scan += 1
+        if watch and scan > 1:
+            console.print(f"\n[bold]Watch scan #{scan}[/bold]")
 
-        redaction_count = 0
-        excluded_count = 0
-        new_count = 0
-        updated_count = 0
-        skipped_count = 0
-        dedup_count = 0
+        db = Database(data_dir / "conversations.db").connect()
+        vectors = VectorStore(data_dir / "vectors").connect()
 
-        for conv in conversations:
-            if db.is_excluded(conv):
-                excluded_count += 1
-                progress.advance(task_db)
-                progress.advance(task_vec)
-                progress.advance(task_ext)
-                if task_sum is not None:
-                    progress.advance(task_sum)
+        # Collect files to process. In directory mode, only consider ZIPs whose
+        # mtime is newer than the last successful ingest (stored in config).
+        if export_path.is_dir():
+            since_str = db.get_config("last_ingested_at")
+            since_ts: float | None = datetime.fromisoformat(since_str).timestamp() if since_str else None
+            zip_files = sorted(
+                f for f in export_path.glob("*.zip")
+                if since_ts is None or f.stat().st_mtime > since_ts
+            )
+            if not zip_files:
+                db.close()
+                if not watch:
+                    console.print("[red]No ZIP files found in directory.[/red]")
+                    raise SystemExit(1)
+                console.print(f"[dim]No new ZIPs in {export_path} — next scan in {interval}s…[/dim]")
+                try:
+                    time.sleep(interval)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Watch stopped.[/yellow]")
+                    return
                 continue
 
-            # Content-hash dedup: skip if an identical conversation already exists under a different ID
-            if conv.content_hash:
-                existing_id = db.find_by_content_hash(conv.content_hash)
-                if existing_id and existing_id != conv.id:
-                    dedup_count += 1
+            console.print(f"[bold]Parsing {len(zip_files)} export(s) from:[/bold] {export_path}")
+            conversations: list = []
+            projects: list = []
+            for zf in zip_files:
+                c, p = parse_export(zf, account_id=account_id)
+                conversations.extend(c)
+                projects.extend(p)
+        else:
+            console.print(f"[bold]Parsing export:[/bold] {export_path}")
+            conversations, projects = parse_export(export_path, account_id=account_id)
+
+        n_c, n_p = len(conversations), len(projects)
+        console.print(f"  Found [green]{n_c}[/green] conversations across [green]{n_p}[/green] projects")
+
+        for project in projects:
+            db.upsert_project(project)
+
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TaskProgressColumn(),
+            console=console,
+        ) as progress:
+            task_db = progress.add_task("Writing to database…", total=len(conversations))
+            task_vec = progress.add_task("Building vector index…", total=len(conversations))
+            task_ext = progress.add_task("Extracting knowledge…", total=len(conversations))
+            task_sum = progress.add_task("Generating summaries…", total=len(conversations)) if summarize else None
+
+            redaction_count = 0
+            excluded_count = 0
+            new_count = 0
+            updated_count = 0
+            skipped_count = 0
+            dedup_count = 0
+
+            for conv in conversations:
+                if db.is_excluded(conv):
+                    excluded_count += 1
                     progress.advance(task_db)
                     progress.advance(task_vec)
                     progress.advance(task_ext)
@@ -154,113 +195,140 @@ def ingest(  # noqa: PLR0913
                         progress.advance(task_sum)
                     continue
 
-            stored_updated_at = db.get_conversation_updated_at(conv.id)
-            is_new = stored_updated_at is None
+                # Content-hash dedup: skip if an identical conversation already exists under a different ID
+                if conv.content_hash:
+                    existing_id = db.find_by_content_hash(conv.content_hash)
+                    if existing_id and existing_id != conv.id:
+                        dedup_count += 1
+                        progress.advance(task_db)
+                        progress.advance(task_vec)
+                        progress.advance(task_ext)
+                        if task_sum is not None:
+                            progress.advance(task_sum)
+                        continue
 
-            if not force and not is_new:
-                # Compare timestamps; skip if the stored version is current or newer.
-                # Both values are timezone-aware UTC datetimes.
-                conv_ts = conv.updated_at
-                if conv_ts is not None and stored_updated_at >= conv_ts:
-                    # Still generate a summary if none exists yet.
-                    if summarizer is not None and db.get_summary(conv.id) is None:
-                        db.upsert_summary(ConversationSummary(
-                            conversation_id=conv.id,
-                            summary=summarizer.summarize(conv),
-                            model=summarizer.model_used(),
-                        ))
-                    skipped_count += 1
-                    progress.advance(task_db)
-                    progress.advance(task_vec)
-                    progress.advance(task_ext)
-                    if task_sum is not None:
-                        progress.advance(task_sum)
-                    continue
+                stored_updated_at = db.get_conversation_updated_at(conv.id)
+                is_new = stored_updated_at is None
 
-            if is_new:
-                new_count += 1
-            else:
-                updated_count += 1
-                db.delete_knowledge_for_conversation(conv.id)
+                if not force and not is_new:
+                    # Compare timestamps; skip if the stored version is current or newer.
+                    # Both values are timezone-aware UTC datetimes.
+                    conv_ts = conv.updated_at
+                    if conv_ts is not None and stored_updated_at >= conv_ts:
+                        # Still generate a summary if none exists yet.
+                        if summarizer is not None and db.get_summary(conv.id) is None:
+                            db.upsert_summary(ConversationSummary(
+                                conversation_id=conv.id,
+                                summary=summarizer.summarize(conv),
+                                model=summarizer.model_used(),
+                            ))
+                        skipped_count += 1
+                        progress.advance(task_db)
+                        progress.advance(task_vec)
+                        progress.advance(task_ext)
+                        if task_sum is not None:
+                            progress.advance(task_sum)
+                        continue
 
-            for msg in conv.messages:
-                clean, findings = redact(msg.content)
-                if findings:
-                    msg.content = clean
-                    redaction_count += len(findings)
+                if is_new:
+                    new_count += 1
+                else:
+                    updated_count += 1
+                    db.delete_knowledge_for_conversation(conv.id)
 
-            db.upsert_conversation(conv)
-            progress.advance(task_db)
+                for msg in conv.messages:
+                    clean, findings = redact(msg.content)
+                    if findings:
+                        msg.content = clean
+                        redaction_count += len(findings)
 
-            vectors.index_conversation(conv)
-            progress.advance(task_vec)
+                db.upsert_conversation(conv)
+                progress.advance(task_db)
 
-            if not skip_extraction:
-                existing = db.find_active_decisions(conv.title[:30])
+                vectors.index_conversation(conv)
+                progress.advance(task_vec)
 
-                llm_decisions, llm_prefs, llm_tcs = [], [], []
-                if llm_extractor is not None:
-                    llm_decisions, llm_prefs, llm_tcs = llm_extractor.extract(conv)
+                if not skip_extraction:
+                    existing = db.find_active_decisions(conv.title[:30])
 
-                new_decisions = llm_decisions or extract_decisions(conv)
-                new_prefs = llm_prefs or extract_preferences(conv)
-                new_tcs = llm_tcs or extract_tech_choices(conv)
+                    llm_decisions, llm_prefs, llm_tcs = [], [], []
+                    if llm_extractor is not None:
+                        llm_decisions, llm_prefs, llm_tcs = llm_extractor.extract(conv)
 
-                for d in new_decisions:
-                    supersessions = apply_temporal_tracking([d], existing)
-                    for old_id, new_id in supersessions:
-                        db.supersede_decision(old_id, new_id)
-                    db.upsert_decision(d)
-                for pref in new_prefs:
-                    db.upsert_preference(pref)
-                for tc in new_tcs:
-                    db.upsert_tech_choice(tc)
-            progress.advance(task_ext)
+                    new_decisions = llm_decisions or extract_decisions(conv)
+                    new_prefs = llm_prefs or extract_preferences(conv)
+                    new_tcs = llm_tcs or extract_tech_choices(conv)
 
-            if summarizer is not None:
-                db.upsert_summary(ConversationSummary(
-                    conversation_id=conv.id,
-                    summary=summarizer.summarize(conv),
-                    model=summarizer.model_used(),
-                ))
-            if task_sum is not None:
-                progress.advance(task_sum)
+                    for d in new_decisions:
+                        supersessions = apply_temporal_tracking([d], existing)
+                        for old_id, new_id in supersessions:
+                            db.supersede_decision(old_id, new_id)
+                        db.upsert_decision(d)
+                    for pref in new_prefs:
+                        db.upsert_preference(pref)
+                    for tc in new_tcs:
+                        db.upsert_tech_choice(tc)
+                progress.advance(task_ext)
 
+                if summarizer is not None:
+                    db.upsert_summary(ConversationSummary(
+                        conversation_id=conv.id,
+                        summary=summarizer.summarize(conv),
+                        model=summarizer.model_used(),
+                    ))
+                if task_sum is not None:
+                    progress.advance(task_sum)
+
+        if build_graph:
+            from consciousness.memory.knowledge_graph import KnowledgeGraphBuilder
+            with console.status("Building knowledge graph…"):
+                kg_nodes, kg_edges = KnowledgeGraphBuilder().rebuild(db)
+                db.commit()
+            console.print(f"  Knowledge graph: {kg_nodes} nodes, {kg_edges} edges")
+
+        s = db.stats()
+        parts = []
+        if new_count:
+            parts.append(f"[green]{new_count} new[/green]")
+        if updated_count:
+            parts.append(f"[cyan]{updated_count} updated[/cyan]")
+        if skipped_count:
+            parts.append(f"[dim]{skipped_count} unchanged[/dim]")
+        delta_summary = ", ".join(parts) if parts else f"{s['conversations']} total"
+        console.print(
+            f"\n[bold green]Done.[/bold green] {delta_summary} — "
+            f"{s['conversations']} conversations, {s['messages']} messages, "
+            f"{vectors.count()} vector chunks, "
+            f"{s['decisions']} decisions, {s['tech_choices']} tech choices"
+        )
+        if dedup_count:
+            console.print(f"  [dim]Deduped:[/dim] {dedup_count} conversations already indexed under another account")
+        if excluded_count:
+            console.print(f"  [yellow]Excluded:[/yellow] {excluded_count} conversations matched exclude rules")
+        if redaction_count:
+            console.print(f"  [yellow]Redacted:[/yellow] {redaction_count} sensitive values")
+        if s.get("accounts", 0) > 1:
+            accounts = db.list_accounts()
+            console.print(f"  [bold]Accounts:[/bold] {', '.join(accounts)}")
+
+        # Persist the timestamp of this successful ingest so directory watch mode
+        # can filter ZIPs by mtime on the next scan.
+        db.set_config("last_ingested_at", datetime.now(timezone.utc).isoformat())
         db.commit()
+        console.print(f"Data directory: [dim]{data_dir}[/dim]")
+        db.close()
 
-    if build_graph:
-        from consciousness.memory.knowledge_graph import KnowledgeGraphBuilder
-        with console.status("Building knowledge graph…"):
-            kg_nodes, kg_edges = KnowledgeGraphBuilder().rebuild(db)
-            db.commit()
-        console.print(f"  Knowledge graph: {kg_nodes} nodes, {kg_edges} edges")
+        if not watch:
+            break
 
-    s = db.stats()
-    parts = []
-    if new_count:
-        parts.append(f"[green]{new_count} new[/green]")
-    if updated_count:
-        parts.append(f"[cyan]{updated_count} updated[/cyan]")
-    if skipped_count:
-        parts.append(f"[dim]{skipped_count} unchanged[/dim]")
-    delta_summary = ", ".join(parts) if parts else f"{s['conversations']} total"
-    console.print(
-        f"\n[bold green]Done.[/bold green] {delta_summary} — "
-        f"{s['conversations']} conversations, {s['messages']} messages, "
-        f"{vectors.count()} vector chunks, "
-        f"{s['decisions']} decisions, {s['tech_choices']} tech choices"
-    )
-    if dedup_count:
-        console.print(f"  [dim]Deduped:[/dim] {dedup_count} conversations already indexed under another account")
-    if excluded_count:
-        console.print(f"  [yellow]Excluded:[/yellow] {excluded_count} conversations matched exclude rules")
-    if redaction_count:
-        console.print(f"  [yellow]Redacted:[/yellow] {redaction_count} sensitive values")
-    if s.get("accounts", 0) > 1:
-        accounts = db.list_accounts()
-        console.print(f"  [bold]Accounts:[/bold] {', '.join(accounts)}")
-    console.print(f"Data directory: [dim]{data_dir}[/dim]")
-    db.close()
+        console.print(
+            f"[dim]Watching [bold]{export_path}[/bold] — next scan in {interval}s (Ctrl+C to stop)[/dim]"
+        )
+        try:
+            time.sleep(interval)
+        except KeyboardInterrupt:
+            console.print("\n[yellow]Watch stopped.[/yellow]")
+            break
 
 
 # ── serve ─────────────────────────────────────────────────────────────────────
