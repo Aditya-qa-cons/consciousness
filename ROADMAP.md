@@ -130,7 +130,7 @@ Selective sharing of conversations or project contexts:
 - Import a collaborator's bundle into a separate namespace in the same store
 - Shared exclude rules for team-wide privacy policies
 
-### 13. Plugin system for extractors
+### 13. Plugin system for extractors ✅ Done
 
 Allow third-party extractor plugins via Python entry points:
 

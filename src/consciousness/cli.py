@@ -90,13 +90,9 @@ def ingest(  # noqa: PLR0913
 
     EXPORT_PATH: path to the exported .zip / conversations.json, or a directory.
     """
-    from consciousness.extractors.knowledge import (
-        apply_temporal_tracking,
-        extract_decisions,
-        extract_preferences,
-        extract_tech_choices,
-    )
+    from consciousness.extractors.knowledge import apply_temporal_tracking
     from consciousness.extractors.llm import LLMExtractor
+    from consciousness.extractors.registry import load_plugins, run_plugins
     from consciousness.extractors.sensitive import redact
     from consciousness.memory.summarizer import ConversationSummarizer
     from consciousness.models import ConversationSummary
@@ -108,9 +104,12 @@ def ingest(  # noqa: PLR0913
         llm_extractor = LLMExtractor()
         if not llm_extractor.is_available():
             console.print(
-                "[yellow]Warning:[/yellow] --llm-extract requires ANTHROPIC_API_KEY; falling back to regex extraction"
+                "[yellow]Warning:[/yellow] --llm-extract requires ANTHROPIC_API_KEY; falling back to plugins"
             )
             llm_extractor = None
+
+    # Load extractor plugins once (entry-point discovery happens here).
+    extractor_plugins = load_plugins() if not skip_extraction else []
 
     summarizer = None
     if summarize:
@@ -255,9 +254,15 @@ def ingest(  # noqa: PLR0913
                     if llm_extractor is not None:
                         llm_decisions, llm_prefs, llm_tcs = llm_extractor.extract(conv)
 
-                    new_decisions = llm_decisions or extract_decisions(conv)
-                    new_prefs = llm_prefs or extract_preferences(conv)
-                    new_tcs = llm_tcs or extract_tech_choices(conv)
+                    if llm_decisions or llm_prefs or llm_tcs:
+                        new_decisions = llm_decisions
+                        new_prefs = llm_prefs
+                        new_tcs = llm_tcs
+                    else:
+                        plugin_result = run_plugins(extractor_plugins, conv)
+                        new_decisions = plugin_result.decisions
+                        new_prefs = plugin_result.preferences
+                        new_tcs = plugin_result.tech_choices
 
                     for d in new_decisions:
                         supersessions = apply_temporal_tracking([d], existing)
@@ -713,6 +718,32 @@ def maintenance(ctx, stale_days: int, digest_days: int, as_json: bool):
 
 
 # ── mcp-config ────────────────────────────────────────────────────────────────
+
+
+# ── plugins ───────────────────────────────────────────────────────────────────
+
+
+@cli.command("plugins")
+def plugins_cmd():
+    """List all registered extractor plugins (discovered via Python entry points)."""
+    from consciousness.extractors.registry import ENTRY_POINT_GROUP, load_plugins
+
+    plugins = load_plugins()
+    if not plugins:
+        console.print(f"[yellow]No plugins registered under '{ENTRY_POINT_GROUP}'.[/yellow]")
+        return
+
+    table = Table(title=f"Extractor Plugins  ({ENTRY_POINT_GROUP})", show_header=True)
+    table.add_column("Name")
+    table.add_column("Class")
+    for p in plugins:
+        table.add_row(p.name, type(p).__qualname__)
+    console.print(table)
+    console.print(
+        f"\nTo add a plugin, register an entry point in your package's pyproject.toml:\n"
+        f"  [project.entry-points.{ENTRY_POINT_GROUP!r}]\n"
+        f"  my_extractor = \"my_package.extractors:MyExtractorClass\""
+    )
 
 
 @cli.command("mcp-config")
