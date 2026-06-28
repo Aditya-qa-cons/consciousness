@@ -95,7 +95,7 @@ Generate and store a 2–3 sentence summary of each conversation at ingest time 
 - Improve `memory://context` resource quality
 - Enable a "what did I work on last week" overview without message-level retrieval
 
-### 9. Knowledge graph
+### 9. Knowledge graph ✅ Done
 
 The extracted decisions and tech choices are currently flat lists. Building a graph where "Postgres" is a node linked to multiple Decision and TechChoice nodes, with edges representing "same-project", "superseded-by", and "related-technology" relationships, would enable richer queries like:
 

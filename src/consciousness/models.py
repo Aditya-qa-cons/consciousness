@@ -117,6 +117,26 @@ class ExcludeRule(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+# ── knowledge graph ────────────────────────────────────────────────────────────
+
+
+class KGNode(BaseModel):
+    """A node in the knowledge graph — a technology name or decision topic."""
+
+    id: str    # 'tech:postgres' or 'topic:database choice'
+    type: str  # 'technology' | 'topic'
+    label: str
+
+
+class KGEdge(BaseModel):
+    """A directed edge in the knowledge graph."""
+
+    src_id: str
+    dst_id: str
+    relation: str  # 'co_occurs_with' | 'superseded_by' | 'relates_to'
+    weight: float = 1.0
+
+
 # ── search + memory ────────────────────────────────────────────────────────────
 
 

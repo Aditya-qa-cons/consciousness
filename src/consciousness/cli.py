@@ -48,8 +48,15 @@ def cli(ctx, data_dir):
     "--summarize/--no-summarize", default=False,
     help="Generate 2-3 sentence summaries per conversation (uses Haiku if ANTHROPIC_API_KEY set, else text extraction)",
 )
+@click.option(
+    "--build-graph/--no-build-graph", default=False,
+    help="Rebuild the knowledge graph after ingest (co-occurrence, supersession, relates-to edges)",
+)
 @click.pass_context
-def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extract: bool, summarize: bool):
+def ingest(  # noqa: PLR0913
+    ctx, export_path: Path, skip_extraction: bool, force: bool,
+    llm_extract: bool, summarize: bool, build_graph: bool,
+):
     """Parse an export file and index it into the local store.
 
     Supports Claude.ai exports (ZIP or JSON) and ChatGPT exports (ZIP).
@@ -59,6 +66,8 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
     Use --llm-extract to run Claude Haiku over each conversation for higher-
     quality knowledge extraction (requires ANTHROPIC_API_KEY).
     Use --summarize to store a 2-3 sentence summary for each conversation.
+    Use --build-graph to rebuild the knowledge graph of co-occurring technologies
+    and decision topics after ingest.
 
     EXPORT_PATH: path to the exported .zip or conversations.json file.
     """
@@ -201,6 +210,13 @@ def ingest(ctx, export_path: Path, skip_extraction: bool, force: bool, llm_extra
                 progress.advance(task_sum)
 
         db.commit()
+
+    if build_graph:
+        from consciousness.memory.knowledge_graph import KnowledgeGraphBuilder
+        with console.status("Building knowledge graph…"):
+            kg_nodes, kg_edges = KnowledgeGraphBuilder().rebuild(db)
+            db.commit()
+        console.print(f"  Knowledge graph: {kg_nodes} nodes, {kg_edges} edges")
 
     s = db.stats()
     parts = []
@@ -445,6 +461,33 @@ def rebuild_index(ctx):
     db.commit()
     db.close()
     console.print(f"[bold green]Done.[/bold green] {vectors.count()} chunks indexed.")
+
+
+# ── rebuild-graph ─────────────────────────────────────────────────────────────
+
+
+@cli.command("rebuild-graph")
+@click.pass_context
+def rebuild_graph(ctx):
+    """Rebuild the knowledge graph from extracted decisions and tech choices.
+
+    Run after ingest to update co-occurrence edges between technologies,
+    superseded-decision chains, and relates-to links between topics and technologies.
+    """
+    from consciousness.memory.knowledge_graph import KnowledgeGraphBuilder
+
+    data_dir: Path = ctx.obj["data_dir"]
+    db_path = data_dir / "conversations.db"
+    if not db_path.exists():
+        console.print("[red]No database found.[/red] Run `consciousness ingest` first.")
+        raise SystemExit(1)
+
+    db = Database(db_path).connect()
+    with console.status("Building knowledge graph…"):
+        nodes, edges = KnowledgeGraphBuilder().rebuild(db)
+    db.commit()
+    db.close()
+    console.print(f"[bold green]Done.[/bold green] {nodes} nodes, {edges} edges")
 
 
 # ── mcp-config ────────────────────────────────────────────────────────────────

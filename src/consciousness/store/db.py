@@ -11,6 +11,8 @@ from consciousness.models import (
     ConversationSummary,
     Decision,
     ExcludeRule,
+    KGEdge,
+    KGNode,
     Message,
     Preference,
     Project,
@@ -101,6 +103,23 @@ CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     content,
     tokenize     = 'unicode61 remove_diacritics 1'
 );
+
+CREATE TABLE IF NOT EXISTS kg_nodes (
+    id    TEXT PRIMARY KEY,
+    type  TEXT NOT NULL,
+    label TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS kg_edges (
+    src_id   TEXT NOT NULL REFERENCES kg_nodes(id) ON DELETE CASCADE,
+    dst_id   TEXT NOT NULL REFERENCES kg_nodes(id) ON DELETE CASCADE,
+    relation TEXT NOT NULL,
+    weight   REAL NOT NULL DEFAULT 1.0,
+    PRIMARY KEY (src_id, dst_id, relation)
+);
+
+CREATE INDEX IF NOT EXISTS idx_kg_edges_src ON kg_edges(src_id);
+CREATE INDEX IF NOT EXISTS idx_kg_edges_dst ON kg_edges(dst_id);
 """
 
 
@@ -296,7 +315,9 @@ class Database:
                 (SELECT COUNT(*) FROM decisions)     as decisions,
                 (SELECT COUNT(*) FROM preferences)   as preferences,
                 (SELECT COUNT(*) FROM tech_choices)  as tech_choices,
-                (SELECT COUNT(*) FROM summaries)     as summaries
+                (SELECT COUNT(*) FROM summaries)     as summaries,
+                (SELECT COUNT(*) FROM kg_nodes)      as kg_nodes,
+                (SELECT COUNT(*) FROM kg_edges)      as kg_edges
             """
         ).fetchone()
         return dict(row)
@@ -380,6 +401,84 @@ class Database:
         ).fetchall()
         return {r["conversation_id"]: self._summary_from_row(r) for r in rows}
 
+    # ── knowledge graph ────────────────────────────────────────────────────────
+
+    def clear_kg(self):
+        self.conn.execute("DELETE FROM kg_edges")
+        self.conn.execute("DELETE FROM kg_nodes")
+
+    def upsert_kg_node(self, node: KGNode):
+        self.conn.execute(
+            "INSERT OR REPLACE INTO kg_nodes(id, type, label) VALUES (?,?,?)",
+            (node.id, node.type, node.label),
+        )
+
+    def upsert_kg_edge(self, edge: KGEdge):
+        self.conn.execute(
+            """INSERT INTO kg_edges(src_id, dst_id, relation, weight) VALUES (?,?,?,?)
+               ON CONFLICT(src_id, dst_id, relation) DO UPDATE SET weight = excluded.weight""",
+            (edge.src_id, edge.dst_id, edge.relation, edge.weight),
+        )
+
+    def get_kg_node(self, node_id: str) -> KGNode | None:
+        row = self.conn.execute("SELECT * FROM kg_nodes WHERE id = ?", (node_id,)).fetchone()
+        return self._kg_node_from_row(row) if row else None
+
+    def get_kg_neighbors(self, node_id: str, relation: str | None = None) -> list[tuple[KGEdge, KGNode]]:
+        """Return (edge, neighbor_node) pairs for all edges touching node_id (both directions)."""
+        rel_clause = " AND e.relation = ?" if relation else ""
+        params = [node_id] + ([relation] if relation else [])
+
+        out_rows = self.conn.execute(
+            f"SELECT e.src_id, e.dst_id, e.relation, e.weight, n.id AS nid, n.type AS ntype, n.label"
+            f" FROM kg_edges e JOIN kg_nodes n ON n.id = e.dst_id"
+            f" WHERE e.src_id = ?{rel_clause}",
+            params,
+        ).fetchall()
+        in_rows = self.conn.execute(
+            f"SELECT e.src_id, e.dst_id, e.relation, e.weight, n.id AS nid, n.type AS ntype, n.label"
+            f" FROM kg_edges e JOIN kg_nodes n ON n.id = e.src_id"
+            f" WHERE e.dst_id = ?{rel_clause}",
+            params,
+        ).fetchall()
+
+        result = []
+        for r in out_rows + in_rows:
+            edge = KGEdge(src_id=r["src_id"], dst_id=r["dst_id"], relation=r["relation"], weight=r["weight"])
+            node = KGNode(id=r["nid"], type=r["ntype"], label=r["label"])
+            result.append((edge, node))
+        return result
+
+    def co_occurring_technologies(self, min_weight: float = 1.0, limit: int = 20) -> list[tuple[str, str, float]]:
+        """Return (tech1_label, tech2_label, weight) pairs sorted by weight desc."""
+        rows = self.conn.execute(
+            """SELECT n1.label, n2.label, e.weight
+               FROM kg_edges e
+               JOIN kg_nodes n1 ON n1.id = e.src_id
+               JOIN kg_nodes n2 ON n2.id = e.dst_id
+               WHERE e.relation = 'co_occurs_with' AND e.weight >= ?
+               ORDER BY e.weight DESC LIMIT ?""",
+            (min_weight, limit),
+        ).fetchall()
+        return [(r[0], r[1], r[2]) for r in rows]
+
+    def revisited_topics(self, limit: int = 20) -> list[tuple[str, int]]:
+        """Decision topics that appear in more than one decision row."""
+        rows = self.conn.execute(
+            """SELECT topic, COUNT(*) AS cnt
+               FROM decisions
+               GROUP BY lower(topic)
+               HAVING cnt > 1
+               ORDER BY cnt DESC LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [(r["topic"], r["cnt"]) for r in rows]
+
+    def list_all_decisions(self) -> list[Decision]:
+        """All decisions including superseded ones."""
+        rows = self.conn.execute("SELECT * FROM decisions ORDER BY extracted_at DESC").fetchall()
+        return [self._decision_from_row(r) for r in rows]
+
     # ── exclude rules ─────────────────────────────────────────────────────────
 
     def add_exclude_rule(self, rule: ExcludeRule):
@@ -462,6 +561,9 @@ class Database:
             generated_at=_from_ts(r["generated_at"]) or datetime.now(),
             model=r["model"],
         )
+
+    def _kg_node_from_row(self, r: sqlite3.Row) -> KGNode:
+        return KGNode(id=r["id"], type=r["type"], label=r["label"])
 
     def _tech_from_row(self, r: sqlite3.Row) -> TechChoice:
         return TechChoice(
