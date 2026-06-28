@@ -536,6 +536,54 @@ def mcp_config(ctx):
     console.print("  Web:     Claude.ai → Settings → Claude Code → MCP servers\n")
 
 
+# ── api ──────────────────────────────────────────────────────────────────────
+
+
+@cli.command("api")
+@click.option("--port", default=8765, show_default=True, help="Port to listen on")
+@click.option("--host", default="127.0.0.1", show_default=True, help="Bind address")
+@click.option("--no-open", is_flag=True, default=False, help="Do not open the browser automatically")
+@click.pass_context
+def api_server(ctx, port: int, host: str, no_open: bool):
+    """Start the REST API server for cross-assistant portability.
+
+    Exposes all consciousness tools as JSON HTTP endpoints.
+    Any OpenAI-compatible assistant can import the tool definitions from:
+      GET http://localhost:8765/api/v1/openai/tools
+
+    Interactive API docs available at:
+      http://localhost:8765/docs
+    """
+    try:
+        import uvicorn
+
+        from consciousness.api.app import create_api_app
+    except ImportError:
+        console.print(
+            "[red]API server requires extra dependencies.[/red] "
+            "Install with: pip install 'consciousness[web]'"
+        )
+        raise SystemExit(1)
+
+    data_dir: Path = ctx.obj["data_dir"]
+    if not (data_dir / "conversations.db").exists():
+        console.print("[red]No data found.[/red] Run `consciousness ingest <export.zip>` first.")
+        raise SystemExit(1)
+
+    app = create_api_app(data_dir)
+    url = f"http://{host}:{port}"
+    console.print(f"[bold green]Consciousness API[/bold green] → {url}/api/v1/")
+    console.print(f"OpenAI tools:  {url}/api/v1/openai/tools")
+    console.print(f"Interactive docs: {url}/docs")
+    console.print("Press Ctrl+C to stop.\n")
+
+    if not no_open:
+        import webbrowser
+        webbrowser.open(f"{url}/docs")
+
+    uvicorn.run(app, host=host, port=port, log_level="warning")
+
+
 # ── ui ───────────────────────────────────────────────────────────────────────
 
 

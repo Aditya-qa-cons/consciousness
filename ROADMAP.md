@@ -108,7 +108,7 @@ SQLite supports this natively via a simple `edges` table; no graph DB needed.
 
 ## Long-term / exploratory
 
-### 10. Cross-assistant portability
+### 10. Cross-assistant portability ✅ Done
 
 The MCP server currently runs tools consumable by any MCP client. Extending the output layer to other protocols:
 
